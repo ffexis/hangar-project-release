@@ -1,0 +1,13 @@
+.env
+__pycache__/
+*.pyc
+*.db
+*.db-wal
+*.db-shm
+app/photos/
+
+# Internal working documents & test scripts (not for release)
+*-plan.md
+hangar-project-setup-plan.md
+hangar-project-responsive-plan.md
+smoke_test.py

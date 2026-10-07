@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Hangar · 初始化</title>
+  <link rel="stylesheet" href="/style.css">
+  <script>
+    // 防闪烁：渲染前同步应用主题
+    (function () {
+      var mode = localStorage.getItem("hangar_theme") || "system";
+      var dark = mode === "dark" || (mode === "system" && matchMedia("(prefers-color-scheme: dark)").matches);
+      document.documentElement.dataset.theme = dark ? "dark" : "light";
+    })();
+  </script>
+  <style>
+    .setup-wrap {
+      max-width: 640px;
+      margin: 0 auto;
+      padding: 28px 20px 60px;
+    }
+    .setup-wrap h1 { font-size: 24px; margin: 0 0 4px; }
+    .setup-wrap > p.sub { color: var(--muted); margin: 0 0 20px; }
+    .net-warning {
+      background: rgba(183, 121, 31, .12);
+      border: 1px solid var(--warn);
+      color: var(--warn);
+      border-radius: 10px;
+      padding: 12px 16px;
+      font-size: 14px;
+      line-height: 1.6;
+      margin-bottom: 22px;
+    }
+    .setup-card {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 18px 20px;
+      margin-bottom: 18px;
+    }
+    .setup-card h2 { font-size: 16px; margin: 0 0 6px; }
+    .setup-card p.hint { color: var(--muted); font-size: 13px; margin: 0 0 12px; line-height: 1.6; }
+    .token-row { display: flex; gap: 8px; }
+    .token-row input { flex: 1; min-width: 0; }
+    .token-warn {
+      background: rgba(47, 111, 237, .10);
+      border: 1px solid var(--accent);
+      color: var(--text);
+      border-radius: 8px;
+      padding: 10px 14px;
+      font-size: 13px;
+      line-height: 1.7;
+      margin-top: 12px;
+    }
+    .token-warn strong { color: var(--accent2); }
+    .token-warn code {
+      background: var(--panel2);
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 2px 8px;
+      font-size: 12.5px;
+      white-space: nowrap;
+    }
+    .enum-label { display: block; font-size: 14px; margin: 14px 0 6px; color: var(--text); }
+    .enum-label:first-of-type { margin-top: 0; }
+    .chip-input {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 6px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 6px 8px;
+      background: var(--panel2);
+      cursor: text;
+    }
+    .chip-input:focus-within { border-color: var(--accent2); }
+    .chip-input input {
+      flex: 1;
+      min-width: 120px;
+      border: none;
+      background: transparent;
+      color: var(--text);
+      padding: 4px 0;
+      outline: none;
+    }
+    .chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      font-size: 13px;
+      line-height: 22px;
+      padding: 2px 6px 2px 10px;
+      max-width: 220px;
+      background: var(--line);
+      border-radius: 12px;
+    }
+    .chip-x {
+      border: none;
+      background: rgba(0, 0, 0, .25);
+      color: #fff;
+      width: 18px;
+      height: 18px;
+      border-radius: 50%;
+      cursor: pointer;
+      font-size: 13px;
+      line-height: 16px;
+      padding: 0;
+      flex: none;
+    }
+    .chip-x:hover { background: rgba(0, 0, 0, .45); }
+    .setup-actions { display: flex; gap: 10px; margin-top: 24px; }
+    .setup-error { color: var(--err); font-size: 14px; margin-top: 12px; min-height: 1em; }
+    input[type="text"], input[type="password"] {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--panel2);
+      color: var(--text);
+      padding: 8px 10px;
+      font-size: 14px;
+    }
+    input[type="text"]:focus, input[type="password"]:focus {
+      outline: none;
+      border-color: var(--accent2);
+    }
+  </style>
+</head>
+<body>
+  <div class="setup-wrap">
+    <h1>Hangar 初始化</h1>
+    <p class="sub">首次部署需要完成以下设置，之后即可正常使用。</p>
+
+    <div class="net-warning">
+      ⚠ 此工具仅适合<strong>内网环境</strong>部署，不要暴露在公网上。
+      登录 Token 以明文存储在容器数据库中，公网暴露存在安全风险。
+    </div>
+
+    <div class="setup-card">
+      <h2>登录 Token</h2>
+      <p class="hint">用于 WebUI 登录和 API 鉴权（X-API-Key），不能为空。</p>
+      <div class="token-row">
+        <input type="text" id="token" placeholder="输入或点击右侧生成" autocomplete="off" spellcheck="false">
+        <button id="btn-gen" class="btn" type="button">随机生成</button>
+        <button id="btn-show" class="btn" type="button" title="显示/隐藏">👁</button>
+      </div>
+      <div class="token-warn">
+        <strong>请务必记好此处设置的 Token！</strong>初始化完成后页面不会再次显示。
+        若遗忘，在容器内执行 <code>cat /data/token.txt</code> 即可查看。
+      </div>
+    </div>
+
+    <div class="setup-card">
+      <h2>硬枚举字段</h2>
+      <p class="hint">类别与状态为受限选项（写入时校验），初始化时可自由修改，默认值仅供参考。</p>
+      <label class="enum-label">类别（category）</label>
+      <div class="chip-input" id="ci-category"><input type="text" placeholder="输入后回车添加"></div>
+      <label class="enum-label">状态（status）</label>
+      <div class="chip-input" id="ci-status"><input type="text" placeholder="输入后回车添加"></div>
+    </div>
+
+    <div class="setup-card">
+      <h2>软枚举字段</h2>
+      <p class="hint">以下字段为自由文本，这里填写的内容仅作为输入建议。可全部留空，之后随记录自由填写。</p>
+      <label class="enum-label">级别（grade）</label>
+      <div class="chip-input" id="ci-grade"><input type="text" placeholder="输入后回车添加"></div>
+      <label class="enum-label">限定类型（limited）</label>
+      <div class="chip-input" id="ci-limited"><input type="text" placeholder="输入后回车添加"></div>
+      <label class="enum-label">来源（origin）</label>
+      <div class="chip-input" id="ci-origin"><input type="text" placeholder="输入后回车添加"></div>
+      <label class="enum-label">存放位置（storage）</label>
+      <div class="chip-input" id="ci-storage"><input type="text" placeholder="输入后回车添加"></div>
+      <label class="enum-label">归属（owner）</label>
+      <div class="chip-input" id="ci-owner"><input type="text" placeholder="输入后回车添加"></div>
+    </div>
+
+    <div class="setup-card">
+      <h2>高德地图 API Key（可选）</h2>
+      <p class="hint">填写后照片 GPS 位置将显示为地址；留空则仅显示坐标。</p>
+      <input type="text" id="amap-key" placeholder="AMAP Key，可留空" autocomplete="off" spellcheck="false" style="width:100%">
+    </div>
+
+    <div class="setup-actions">
+      <button id="btn-submit" class="btn primary" type="button">完成初始化</button>
+    </div>
+    <p id="setup-error" class="setup-error"></p>
+  </div>
+
+  <script src="/setup.js"></script>
+</body>
+</html>

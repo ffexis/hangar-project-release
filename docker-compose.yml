@@ -1,0 +1,21 @@
+services:
+  hangar-project:
+    build: .
+    container_name: hangar-project
+    ports:
+      - "0.0.0.0:8333:8333"
+    environment:
+      # 可选：设置 API_TOKEN 会跳过 setup 页走 env 引导（老部署兼容）；
+      # 留空则首次访问进入 setup 初始化页配置。
+      - API_TOKEN=${API_TOKEN:-}
+      - AMAP_KEY=${AMAP_KEY:-}
+      - DATA_FILE=/data/models.db
+      - PHOTOS_DIR=/app/photos
+    volumes:
+      - ledger_data:/data
+      # Change to your own photo directory, e.g. set PHOTOS_DIR_HOST in .env
+      - ${PHOTOS_DIR_HOST:-./photos}:/app/photos
+    restart: unless-stopped
+
+volumes:
+  ledger_data:
