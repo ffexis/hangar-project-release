@@ -21,6 +21,8 @@ full-screen lightbox.
 - **Read-only browsing** without login; writes require the `X-API-Key` token
 - **Photo upload** with per-record gallery, full-screen lightbox, and **EXIF display**
   (capture time, device, focal length / aperture / shutter / ISO)
+- **On-demand thumbnails**: list and gallery images are lazily generated, disk-cached
+  JPEGs, so browsing never downloads full originals (lightbox still shows the original)
 - **GPS → address** via Amap reverse geocoding (WGS-84 → GCJ-02 conversion built in),
   with a persistent local cache so repeated lookups are cheap; falls back to raw
   coordinates when no API key is configured

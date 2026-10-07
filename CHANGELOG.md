@@ -3,6 +3,53 @@
 All notable changes to this project are documented here.
 This project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.1.0]
+
+### Added
+
+- **Swipe-to-navigate lightbox** on touch screens: images now follow the finger
+  while dragging, with rubber-band resistance and bounce-back at the first /
+  last photo; neighbors are preloaded so slides never flash blank. Paging is no
+  longer circular — reaching either end clamps and the nav arrows grey out.
+
+### Changed
+
+- **Frontend split into ES modules** (`core / list / form / detail / lightbox /
+  main`): `app.js` (~950 lines) was broken apart by concern for maintainability.
+  No behavior change beyond the items below.
+- Detail view: the comment field renders as a full-width block (label on its own
+  line, content below with line breaks preserved); the update timestamp is no
+  longer displayed (the field remains in the API).
+- Form buttons: desktop actions are right-aligned with Save on the far right and
+  Cancel to its left; mobile stacks Save above Cancel.
+- Lightbox: the image is strictly centered in the viewport with EXIF info
+  pinned below; the GPS entry is now a single tappable address/coordinate link
+  (the "位置" / "在地图查看" labels were removed).
+- Detail modal scrollbars now follow the light / dark theme.
+- Smaller upload and delete controls in the mobile photo gallery.
+
+### Fixed
+
+- Thumbnails ignored EXIF orientation and produced rotated images. Generation
+  now applies `exif_transpose` before scaling; the disk cache is versioned
+  (`.thumb-v2.jpg`) and the client URL carries `?v=2` so stale caches are
+  bypassed.
+- Lightbox slide-in direction was reversed after a swipe (the new image entered
+  from the side the old one exited); a forced style flush before the slide-in
+  transition fixes it.
+
+## [1.0.1]
+
+### Added
+
+- **On-demand photo thumbnails** (`GET /thumbs/{filename}`): list rows and the
+  detail gallery now load lazily-generated 400px JPEG thumbnails instead of full
+  originals, cutting page weight and browser decode cost. Thumbnails are cached
+  on disk (default `<DATA_DIR>/thumbs`, on the named volume), generated on first
+  request, and removed when a photo is deleted. GIFs keep their animation and
+  fall back to the original; any generation error falls back to the original so
+  images never break. The full-screen lightbox still shows the original.
+
 ## [1.0.0]
 
 First open-source release. MVP: functional but not polished.
@@ -54,4 +101,5 @@ First open-source release. MVP: functional but not polished.
   plaintext by design; reads are unauthenticated; no HTTPS / rate limiting /
   multi-user support. Do not expose to the public internet.
 
+[1.1.0]: https://github.com/ffexis/hangar-project-release/releases/tag/v1.1.0
 [1.0.0]: https://github.com/ffexis/hangar-project-release/releases/tag/v1.0.0

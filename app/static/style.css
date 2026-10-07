@@ -374,6 +374,8 @@ input:disabled { opacity: .5; }
 textarea { resize: vertical; }
 
 .form-actions { margin-top: 18px; display: flex; gap: 10px; }
+/* 大屏：按钮靠右，保存在最右，返回在其左 */
+#view-form .form-actions { justify-content: flex-end; flex-direction: row-reverse; }
 
 /* ---------- 详情 ---------- */
 
@@ -389,6 +391,11 @@ textarea { resize: vertical; }
 }
 .dk { width: 110px; color: var(--muted); flex-shrink: 0; }
 .dv { word-break: break-all; }
+
+/* 评价/备注：标题独立行，内容另起一行并保留换行符 */
+.drow-block { flex-direction: column; gap: 4px; grid-column: 1 / -1; }
+.drow-block .dk { width: auto; }
+.drow-block .dv { white-space: pre-wrap; word-break: normal; }
 
 .photos-head {
   display: flex;
@@ -436,12 +443,14 @@ textarea { resize: vertical; }
   padding: 30px;
 }
 .lb-main {
+  position: fixed;
+  inset: 0;
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 12px;
-  max-width: 90vw;
+  justify-content: center;
   cursor: default;
+  pointer-events: none;   /* 空白区域点击穿透到遮罩关闭 */
 }
 #lightbox img {
   max-width: 90vw;
@@ -449,8 +458,14 @@ textarea { resize: vertical; }
   border-radius: 10px;
   box-shadow: 0 10px 50px rgba(0, 0, 0, .6);
   object-fit: contain;
+  pointer-events: auto;
+  will-change: transform;
 }
 .lb-info {
+  position: fixed;
+  bottom: 14px;
+  left: 50%;
+  transform: translateX(-50%);
   display: flex;
   flex-wrap: wrap;
   justify-content: center;
@@ -459,6 +474,7 @@ textarea { resize: vertical; }
   color: #e6ebf5;
   font-size: 13px;
   cursor: default;
+  pointer-events: auto;
 }
 .lb-info a { color: #9cc0ff; }
 .lb-item { white-space: nowrap; }
@@ -478,6 +494,8 @@ textarea { resize: vertical; }
   cursor: pointer;
 }
 .lb-nav:hover { background: rgba(255, 255, 255, .25); }
+.lb-nav.lb-disabled { opacity: .25; cursor: default; }
+.lb-nav.lb-disabled:hover { background: rgba(255, 255, 255, .12); }
 .lb-prev { left: 16px; }
 .lb-next { right: 16px; }
 
@@ -545,7 +563,17 @@ textarea { resize: vertical; }
   overflow-y: auto;
   padding: 16px 20px 20px;
   -webkit-overflow-scrolling: touch;
+  scrollbar-width: thin;
+  scrollbar-color: var(--line) var(--panel);
 }
+.detail-scroll::-webkit-scrollbar { width: 10px; }
+.detail-scroll::-webkit-scrollbar-track { background: var(--panel); }
+.detail-scroll::-webkit-scrollbar-thumb {
+  background: var(--line);
+  border-radius: 6px;
+  border: 2px solid var(--panel);
+}
+.detail-scroll::-webkit-scrollbar-thumb:hover { background: var(--muted); }
 body.modal-open { overflow: hidden; }
 .modal input { width: 100%; margin-top: 10px; }
 
@@ -683,16 +711,20 @@ main { padding-bottom: 44px; }
   .grid { grid-template-columns: minmax(0, 1fr); }
   .detail-grid { grid-template-columns: minmax(0, 1fr); }
   input, select, textarea { font-size: 16px; }  /* 防 iOS 聚焦缩放 */
-  .form-actions { flex-direction: column-reverse; gap: 8px; }
+  /* 小屏表单按钮：保存上、返回下 */
+  #view-form .form-actions { flex-direction: column; }
+  .form-actions { gap: 8px; }
   .form-actions .btn { width: 100%; padding: 12px; }
 
   /* ---- 照片网格（每行 3 张） ---- */
   .photos { gap: 8px; }
   .photos-head { flex-wrap: wrap; }
-  /* 上传按钮：小屏只留图标 */
-  .btn-sm#btn-upload { padding: 8px 10px; }
+  /* 上传按钮：小屏只留图标，且缩小命中区 */
+  .btn-sm#btn-upload { padding: 6px 8px; }
   #btn-upload .up-label { display: none; }
-  #btn-upload .up-icon { display: block; }
+  #btn-upload .up-icon { display: block; width: 18px; height: 18px; }
+  /* 删除角标缩小 */
+  .photo-del { width: 22px; height: 22px; font-size: 15px; top: 4px; right: 4px; }
 
   /* ---- Lightbox ---- */
   #lightbox { padding: 10px; }
@@ -742,5 +774,5 @@ main { padding-bottom: 44px; }
   button.link { padding: 10px 12px; }
   .theme-trigger { width: 44px; height: 44px; }
   .theme-trigger svg { width: 24px; height: 24px; }
-  .photo-del { width: 32px; height: 32px; font-size: 18px; }
+  .photo-del { width: 24px; height: 24px; font-size: 15px; }
 }

@@ -1,4 +1,5 @@
 """Hangar Project：模玩管理 FastAPI 入口（REST API + 静态 WebUI）。"""
+import io
 import os
 import re
 import secrets
@@ -15,11 +16,17 @@ STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
 PHOTOS_DIR = os.environ.get("PHOTOS_DIR", os.path.join(os.path.dirname(__file__), "photos"))
 os.makedirs(PHOTOS_DIR, exist_ok=True)
 
+# 缩略图缓存目录：默认落在数据卷（与 DATA_FILE 同目录），重建容器不丢失。
+DATA_DIR = os.path.dirname(os.environ.get("DATA_FILE", "/data/models.db")) or "."
+THUMBS_DIR = os.environ.get("THUMBS_DIR", os.path.join(DATA_DIR, "thumbs"))
+os.makedirs(THUMBS_DIR, exist_ok=True)
+THUMB_SIZE = 400
+
 MAX_PHOTO_BYTES = 20 * 1024 * 1024
 ALLOWED_EXTS = {"jpg": "jpg", "jpeg": "jpg", "png": "png", "webp": "webp", "gif": "gif"}
 SAFE_NAME_RE = re.compile(r"[A-Za-z0-9_.-]+\Z")
 
-app = FastAPI(title="Hangar Project", version="1.0.0")
+app = FastAPI(title="Hangar Project", version="1.1.0")
 
 
 def verify_api_key(x_api_key: Optional[str] = Header(None)):
@@ -283,6 +290,10 @@ def delete_photo(model_id: str, filename: str):
         os.remove(os.path.join(PHOTOS_DIR, filename))
     except FileNotFoundError:
         pass
+    try:
+        os.remove(_thumb_path(filename))
+    except FileNotFoundError:
+        pass
     photos = [p for p in m["photos"] if p != url]
     return db.update_model(model_id, {"photos": photos})
 
@@ -315,6 +326,58 @@ async def photo_meta(model_id: str, filename: str):
     else:
         meta["address"] = None
     return meta
+
+
+def _thumb_path(filename: str) -> str:
+    # 后缀带版本号：生成逻辑变更时递增，旧缓存自动失效
+    return os.path.join(THUMBS_DIR, filename + ".thumb-v2.jpg")
+
+
+@app.get("/thumbs/{filename}")
+def get_thumb(filename: str):
+    """懒生成缩略图：命中缓存直接返回，未命中则从原图缩放后落盘。
+    无需鉴权（与 /photos 静态挂载一致）；GIF 保留动画直接回原图。"""
+    if not SAFE_NAME_RE.match(filename) or filename.startswith("."):
+        raise HTTPException(status_code=400, detail="非法文件名")
+    src = os.path.join(PHOTOS_DIR, filename)
+    if not os.path.isfile(src):
+        raise HTTPException(status_code=404, detail="照片文件不存在")
+    ext = filename.lower().rsplit(".", 1)[-1] if "." in filename else ""
+    if ext == "gif":
+        return RedirectResponse(f"/photos/{filename}")
+
+    thumb = _thumb_path(filename)
+    # 缓存命中：缩略图不早于原图生成则复用
+    if os.path.isfile(thumb) and os.path.getmtime(thumb) >= os.path.getmtime(src):
+        return FileResponse(thumb, media_type="image/jpeg",
+                            headers={"Cache-Control": "public, max-age=31536000, immutable"})
+
+    try:
+        from PIL import Image, ImageOps
+        with Image.open(src) as im:
+            # 先按 EXIF Orientation 转正，再处理透明/缩放（否则缩略图方向错误）
+            im = ImageOps.exif_transpose(im)
+            # 透明背景铺白，统一转 JPEG
+            if im.mode in ("RGBA", "LA", "P"):
+                im = im.convert("RGBA")
+                bg = Image.new("RGB", im.size, (255, 255, 255))
+                bg.paste(im, mask=im.split()[-1])
+                im = bg
+            else:
+                im = im.convert("RGB")
+            im.thumbnail((THUMB_SIZE, THUMB_SIZE), Image.LANCZOS)
+            buf = io.BytesIO()
+            im.save(buf, format="JPEG", quality=80, optimize=True)
+            data = buf.getvalue()
+        tmp = thumb + ".tmp"
+        with open(tmp, "wb") as out:
+            out.write(data)
+        os.replace(tmp, thumb)
+    except Exception:
+        # 生成失败回退原图，绝不让前端图片裂开
+        return FileResponse(src)
+    return FileResponse(thumb, media_type="image/jpeg",
+                        headers={"Cache-Control": "public, max-age=31536000, immutable"})
 
 
 # ---------- WebUI 入口（无需鉴权，内网自用） ----------
