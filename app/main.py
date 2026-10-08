@@ -1,16 +1,23 @@
 """Hangar Project：模玩管理 FastAPI 入口（REST API + 静态 WebUI）。"""
 import io
+import json
+import logging
+import mimetypes
 import os
 import re
 import secrets
+import shutil
+import time
 from typing import Optional
 
-from fastapi import Depends, FastAPI, File, Header, HTTPException, Query, Request, UploadFile
+from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from . import db, exif
+
+logger = logging.getLogger("hangar")
 
 STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
 PHOTOS_DIR = os.environ.get("PHOTOS_DIR", os.path.join(os.path.dirname(__file__), "photos"))
@@ -22,11 +29,19 @@ THUMBS_DIR = os.environ.get("THUMBS_DIR", os.path.join(DATA_DIR, "thumbs"))
 os.makedirs(THUMBS_DIR, exist_ok=True)
 THUMB_SIZE = 400
 
+# 分块上传临时目录：与缩略图同在数据卷，且不在 /photos 静态挂载路径内（防匿名下载残留块）。
+UPLOADS_DIR = os.path.join(DATA_DIR, ".uploads")
+
 MAX_PHOTO_BYTES = 20 * 1024 * 1024
+CHUNK_MAX_BYTES = 2 * 1024 * 1024
+UPLOADS_TTL = 24 * 3600  # 残留临时目录 24h 后清理
 ALLOWED_EXTS = {"jpg": "jpg", "jpeg": "jpg", "png": "png", "webp": "webp", "gif": "gif"}
 SAFE_NAME_RE = re.compile(r"[A-Za-z0-9_.-]+\Z")
 
-app = FastAPI(title="Hangar Project", version="1.1.0")
+# 部分环境 mimetypes 未内置 .webmanifest，注册以确保 manifest 以正确 MIME 提供（PWA 安装要求）
+mimetypes.add_type("application/manifest+json", ".webmanifest")
+
+app = FastAPI(title="Hangar Project", version="1.2.0")
 
 
 def verify_api_key(x_api_key: Optional[str] = Header(None)):
@@ -39,6 +54,36 @@ def verify_api_key(x_api_key: Optional[str] = Header(None)):
 @app.on_event("startup")
 def startup():
     db.init_db()
+    if db.is_initialized():
+        _startup_consistency_scan()
+
+
+def _startup_consistency_scan():
+    """启动一致性治理：清理过期 .uploads 临时目录 + 记录孤儿照片文件（不自动删除）。"""
+    n = _cleanup_uploads()
+    if n:
+        logger.info("启动清理过期上传临时目录 %d 个", n)
+    referenced = set()
+    for m in db.list_models():
+        for p in m.get("photos") or []:
+            fn = _photo_filename(p)
+            if fn:
+                referenced.add(fn)
+    try:
+        orphans = []
+        for fn in os.listdir(PHOTOS_DIR):
+            if not SAFE_NAME_RE.match(fn) or fn.startswith("."):
+                continue
+            if not os.path.isfile(os.path.join(PHOTOS_DIR, fn)):
+                continue
+            ext = fn.lower().rsplit(".", 1)[-1] if "." in fn else ""
+            if ext in ALLOWED_EXTS and fn not in referenced:
+                orphans.append(fn)
+        if orphans:
+            logger.warning("发现 %d 个孤儿照片文件（未被任何模型引用，不自动删除）: %s",
+                           len(orphans), ", ".join(sorted(orphans)[:50]))
+    except OSError as e:
+        logger.warning("孤儿扫描失败: %s", e)
 
 
 @app.middleware("http")
@@ -103,6 +148,36 @@ def _check_enums(data: dict, partial: bool = False):
     if not partial or "status" in data:
         if data.get("status") and data["status"] not in cfg["statuses"]:
             raise HTTPException(status_code=422, detail=f"status 必须是 {cfg['statuses']} 之一")
+
+
+def _photo_filename(url):
+    """photos 条目归一化为文件名：接受 '/photos/x.jpg' 或裸文件名；非法返回 None。"""
+    if not isinstance(url, str):
+        return None
+    fn = os.path.basename(url)
+    if not fn or not SAFE_NAME_RE.match(fn) or fn.startswith("."):
+        return None
+    return fn
+
+
+def _validate_photos(photos):
+    """photos 数组写路径统一校验（POST 创建 / PATCH / 重排共用）：
+    每条必须是合法 '/photos/<真实存在的文件>'，且无重复。返回归一化后的 URL 列表。"""
+    if not isinstance(photos, list):
+        raise HTTPException(status_code=400, detail="photos 必须是列表")
+    urls, seen = [], set()
+    for p in photos:
+        fn = _photo_filename(p)
+        if fn is None or not str(p).startswith("/photos/"):
+            raise HTTPException(status_code=400, detail=f"非法照片条目: {p!r}")
+        if not os.path.isfile(os.path.join(PHOTOS_DIR, fn)):
+            raise HTTPException(status_code=400, detail=f"照片文件不存在: {fn}")
+        url = f"/photos/{fn}"
+        if url in seen:
+            raise HTTPException(status_code=400, detail=f"照片条目重复: {fn}")
+        seen.add(url)
+        urls.append(url)
+    return urls
 
 
 # ---------- 初始化（setup） ----------
@@ -200,6 +275,8 @@ def get_model(model_id: str):
 def create_model(body: ModelCreate):
     data = body.model_dump(exclude_none=True)
     _check_enums(data)
+    if "photos" in data:
+        data["photos"] = _validate_photos(data["photos"])
     try:
         return db.create_model(data)
     except ValueError as e:
@@ -212,6 +289,8 @@ def create_model(body: ModelCreate):
 def patch_model(model_id: str, body: ModelPatch):
     data = body.model_dump(exclude_unset=True)
     _check_enums(data, partial=True)
+    if "photos" in data and data["photos"] is not None:
+        data["photos"] = _validate_photos(data["photos"])
     m = db.update_model(model_id, data)
     if not m:
         raise HTTPException(status_code=404, detail="记录不存在")
@@ -274,6 +353,173 @@ async def upload_photos(model_id: str, file: list[UploadFile] = File(...)):
         raise
     photos.extend(saved)
     return db.update_model(model_id, {"photos": photos})
+
+
+# ---------- 分块断点续传（弱网并行路径；产出与整图上传一致） ----------
+
+def _safe_upload_id(upload_id: str) -> str:
+    if (not isinstance(upload_id, str) or not SAFE_NAME_RE.match(upload_id)
+            or upload_id.startswith(".")):
+        raise HTTPException(status_code=400, detail="非法 upload_id")
+    return upload_id
+
+
+def _upload_dir(upload_id: str) -> str:
+    return os.path.join(UPLOADS_DIR, upload_id)
+
+
+def _ext_from_filename(filename):
+    ext = (filename or "").lower().rsplit(".", 1)
+    ext = ext[1] if len(ext) == 2 else ""
+    return ALLOWED_EXTS.get(ext)
+
+
+def _cleanup_uploads(max_age=UPLOADS_TTL):
+    """删除超过 max_age 的残留临时目录（崩溃/断电遗留）。返回删除数。"""
+    if not os.path.isdir(UPLOADS_DIR):
+        return 0
+    now, removed = time.time(), 0
+    for d in os.listdir(UPLOADS_DIR):
+        p = os.path.join(UPLOADS_DIR, d)
+        try:
+            if os.path.isdir(p) and now - os.path.getmtime(p) > max_age:
+                shutil.rmtree(p, ignore_errors=True)
+                removed += 1
+        except OSError:
+            pass
+    return removed
+
+
+_last_uploads_cleanup = [None]  # [date_str] 每日首次 complete 时顺带清理
+
+
+def _maybe_daily_cleanup():
+    today = time.strftime("%Y-%m-%d")
+    if _last_uploads_cleanup[0] != today:
+        _last_uploads_cleanup[0] = today
+        n = _cleanup_uploads()
+        if n:
+            logger.info("清理过期上传临时目录 %d 个", n)
+
+
+@app.post("/api/v1/models/{model_id}/photos/chunk", dependencies=[Depends(verify_api_key)])
+async def upload_photo_chunk(model_id: str,
+                             upload_id: str = Form(...),
+                             index: int = Form(...),
+                             total: int = Form(...),
+                             file: UploadFile = File(...)):
+    if not db.get_model(model_id):
+        raise HTTPException(status_code=404, detail="记录不存在")
+    _safe_upload_id(upload_id)
+    if total < 1 or total > 5000 or index < 0 or index >= total:
+        raise HTTPException(status_code=400, detail="index/total 非法")
+    ext = _ext_from_filename(file.filename)
+    if ext is None:
+        raise HTTPException(status_code=400,
+                            detail=f"不支持的文件类型: {file.filename}（仅 jpg/png/webp/gif）")
+    data = await file.read()
+    if not data:
+        raise HTTPException(status_code=400, detail=f"空块: index={index}")
+    if len(data) > CHUNK_MAX_BYTES:
+        raise HTTPException(status_code=400, detail="块超过 2MB 上限")
+
+    d = _upload_dir(upload_id)
+    os.makedirs(d, exist_ok=True)
+    meta_path = os.path.join(d, ".meta")
+    # sidecar 记录归一化 ext 与 total（首个到达的块落盘；后续块校验一致性）
+    meta = {"ext": ext, "total": total}
+    if os.path.isfile(meta_path):
+        try:
+            with open(meta_path, encoding="utf-8") as f:
+                old = json.load(f)
+            if old.get("total") != total or old.get("ext") != ext:
+                raise HTTPException(status_code=400, detail="同 upload_id 的 total/扩展名不一致")
+        except (ValueError, KeyError):
+            pass
+    else:
+        with open(meta_path, "w", encoding="utf-8") as f:
+            json.dump(meta, f)
+    part = os.path.join(d, f"{index}.part")
+    tmp = part + ".tmp"
+    with open(tmp, "wb") as out:
+        out.write(data)
+    os.replace(tmp, part)  # 原子落盘，半截块不会伪装成成功
+    return {"ok": True, "received": index}
+
+
+class CompleteBody(BaseModel):
+    upload_id: str
+    filename: Optional[str] = None
+
+
+@app.post("/api/v1/models/{model_id}/photos/complete", dependencies=[Depends(verify_api_key)])
+def complete_photo_upload(model_id: str, body: CompleteBody):
+    m = db.get_model(model_id)
+    if not m:
+        raise HTTPException(status_code=404, detail="记录不存在")
+    _safe_upload_id(body.upload_id)
+    _maybe_daily_cleanup()
+    d = _upload_dir(body.upload_id)
+    meta_path = os.path.join(d, ".meta")
+    if not os.path.isdir(d) or not os.path.isfile(meta_path):
+        raise HTTPException(status_code=400, detail="上传会话不存在或已被清理")
+    with open(meta_path, encoding="utf-8") as f:
+        meta = json.load(f)
+    total, ext = meta["total"], meta["ext"]
+
+    parts = [os.path.join(d, f"{i}.part") for i in range(total)]
+    missing = [i for i, p in enumerate(parts) if not os.path.isfile(p)]
+    if missing:
+        raise HTTPException(status_code=400,
+                            detail={"error": "缺块", "total": total, "missing": missing,
+                                    "received": [i for i in range(total) if i not in missing]})
+    sizes = [os.path.getsize(p) for p in parts]
+    if sum(sizes) > MAX_PHOTO_BYTES:
+        shutil.rmtree(d, ignore_errors=True)
+        raise HTTPException(status_code=400, detail="合并后超过 20MB 上限")
+
+    photos = list(m["photos"])
+    idx = _next_photo_index(photos, model_id)
+    fname = f"{model_id}_{idx}.{ext}"
+    final = os.path.join(PHOTOS_DIR, fname)
+    tmp = final + ".merging.tmp"
+    try:
+        with open(tmp, "wb") as out:
+            for p in parts:
+                with open(p, "rb") as src:
+                    shutil.copyfileobj(src, out)
+        os.replace(tmp, final)
+    except OSError as e:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        raise HTTPException(status_code=500, detail=f"合并写盘失败: {e}")
+    shutil.rmtree(d, ignore_errors=True)
+    photos.append(f"/photos/{fname}")
+    return db.update_model(model_id, {"photos": photos})
+
+
+class OrderBody(BaseModel):
+    order: list
+
+
+@app.put("/api/v1/models/{model_id}/photos/order", dependencies=[Depends(verify_api_key)])
+def reorder_photos(model_id: str, body: OrderBody):
+    """photos 重排：order 必须是当前数组的排列（多重集相等），且每条文件真实存在。
+    条目接受裸文件名或完整 /photos/ URL，服务端归一化。"""
+    m = db.get_model(model_id)
+    if not m:
+        raise HTTPException(status_code=404, detail="记录不存在")
+    normalized = []
+    for p in body.order:
+        fn = _photo_filename(p) if isinstance(p, str) else None
+        normalized.append(f"/photos/{fn}" if fn else p)
+    urls = _validate_photos(normalized)
+    current = [f"/photos/{os.path.basename(pp)}" for pp in m["photos"] if _photo_filename(pp)]
+    if sorted(urls) != sorted(current) or len(urls) != len(m["photos"]):
+        raise HTTPException(status_code=400, detail="order 必须是当前 photos 数组的排列（无增删/重复）")
+    return db.update_model(model_id, {"photos": urls})
 
 
 @app.delete("/api/v1/models/{model_id}/photos/{filename}", dependencies=[Depends(verify_api_key)])

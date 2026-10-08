@@ -435,6 +435,27 @@ textarea { resize: vertical; }
   cursor: pointer;
 }
 .photo-del:hover { background: var(--err); }
+.photo-move {
+  position: absolute;
+  bottom: 6px;
+  right: 6px;
+  display: flex;
+  gap: 4px;
+}
+.photo-move button {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  border: none;
+  background: rgba(0, 0, 0, .55);
+  color: #fff;
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0;
+}
+.photo-move button:hover:not(:disabled) { background: var(--accent); }
+.photo-move button:disabled { opacity: .3; cursor: default; }
 
 /* ---------- Lightbox ---------- */
 
@@ -725,6 +746,8 @@ main { padding-bottom: 44px; }
   #btn-upload .up-icon { display: block; width: 18px; height: 18px; }
   /* 删除角标缩小 */
   .photo-del { width: 22px; height: 22px; font-size: 15px; top: 4px; right: 4px; }
+  .photo-move { bottom: 4px; right: 4px; gap: 3px; }
+  .photo-move button { width: 20px; height: 20px; font-size: 12px; }
 
   /* ---- Lightbox ---- */
   #lightbox { padding: 10px; }

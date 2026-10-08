@@ -57,6 +57,17 @@ export function thumbUrl(p) {
   return p && p.startsWith("/photos/") ? "/thumbs/" + p.slice("/photos/".length) + "?v=2" : p;
 }
 
+// uuid v4：crypto.randomUUID 仅安全上下文（HTTPS/localhost）可用，
+// 内网 HTTP 部署下是 undefined，必须用 getRandomValues 兜底。
+export function uuidv4() {
+  if (crypto.randomUUID) return crypto.randomUUID();
+  const b = crypto.getRandomValues(new Uint8Array(16));
+  b[6] = (b[6] & 0x0f) | 0x40;
+  b[8] = (b[8] & 0x3f) | 0x80;
+  const h = Array.from(b, (x) => x.toString(16).padStart(2, "0")).join("");
+  return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20)}`;
+}
+
 // ---------- 标签徽章 ----------
 // 按 tag 文本哈希固定分配颜色，同名 tag 颜色恒定。
 

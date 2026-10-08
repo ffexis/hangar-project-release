@@ -3,6 +3,40 @@
 All notable changes to this project are documented here.
 This project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.2.0]
+
+### Added
+
+- **Chunked resumable photo upload** for slow links: the WebUI now splits each
+  file into 2 MB chunks (`POST /photos/chunk` + `POST /photos/complete`), with
+  per-chunk retry (exponential backoff), text progress (`上传中 k/n · 块 i/c（xx%）`),
+  pause-on-network-drop with in-session resume, and server-side merge that
+  produces the same `M{id}_{n}.ext` naming and `photos` array semantics as the
+  existing single-shot upload. The original `POST /photos` endpoint is kept
+  unchanged for scripts / local curl uploads.
+- **Photo reordering**: dedicated `PUT /photos/order` endpoint (validates the
+  order is a permutation of the current array) plus up/down buttons on each
+  detail-grid photo.
+- **Photos array consistency**: every write path (`POST /models`,
+  `PATCH /models/{id}`, reorder) now rejects entries whose files are missing
+  on disk, malformed, or duplicated; startup logs orphaned photo files and
+  garbage-collects upload temp sessions older than 24 h.
+
+### Changed
+
+- `crypto.randomUUID` is no longer required — a `crypto.getRandomValues`-based
+  UUID fallback makes chunked uploads work over plain HTTP (insecure contexts).
+
+## [1.1.1]
+
+### Added
+
+- **PWA support & site icon**: a web app manifest (`display: standalone`),
+  favicon / apple-touch-icon set, and `theme-color` meta. Desktop browsers can
+  now install Hangar as an app; mobile browsers require a secure context
+  (HTTPS) for installation, so on plain-HTTP LAN deployments the manifest
+  mainly serves icons there.
+
 ## [1.1.0]
 
 ### Added
