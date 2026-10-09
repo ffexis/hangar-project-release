@@ -8,9 +8,12 @@ import re
 import secrets
 import shutil
 import time
+import zipfile
 from typing import Optional
+from urllib.parse import quote
 
-from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Query, Request, UploadFile
+import pyzipper
+from fastapi import BackgroundTasks, Depends, FastAPI, File, Form, Header, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -41,7 +44,7 @@ SAFE_NAME_RE = re.compile(r"[A-Za-z0-9_.-]+\Z")
 # 部分环境 mimetypes 未内置 .webmanifest，注册以确保 manifest 以正确 MIME 提供（PWA 安装要求）
 mimetypes.add_type("application/manifest+json", ".webmanifest")
 
-app = FastAPI(title="Hangar Project", version="1.2.0")
+app = FastAPI(title="Hangar Project", version="1.3.0")
 
 
 def verify_api_key(x_api_key: Optional[str] = Header(None)):
@@ -59,10 +62,10 @@ def startup():
 
 
 def _startup_consistency_scan():
-    """启动一致性治理：清理过期 .uploads 临时目录 + 记录孤儿照片文件（不自动删除）。"""
-    n = _cleanup_uploads()
+    """启动一致性治理：清理过期 .uploads/.import_tmp 临时目录 + 记录孤儿照片文件（不自动删除）。"""
+    n = _cleanup_uploads() + _cleanup_import_tmp()
     if n:
-        logger.info("启动清理过期上传临时目录 %d 个", n)
+        logger.info("启动清理过期上传/导入临时目录 %d 个", n)
     referenced = set()
     for m in db.list_models():
         for p in m.get("photos") or []:
@@ -208,7 +211,7 @@ def _clean_list(items, field, min_len=0):
 
 @app.get("/api/v1/status")
 def setup_status():
-    return {"initialized": db.is_initialized()}
+    return {"initialized": db.is_initialized(), "version": app.version}
 
 
 @app.post("/api/v1/setup", status_code=201)
@@ -397,9 +400,9 @@ def _maybe_daily_cleanup():
     today = time.strftime("%Y-%m-%d")
     if _last_uploads_cleanup[0] != today:
         _last_uploads_cleanup[0] = today
-        n = _cleanup_uploads()
+        n = _cleanup_uploads() + _cleanup_import_tmp()
         if n:
-            logger.info("清理过期上传临时目录 %d 个", n)
+            logger.info("清理过期上传/导入临时目录 %d 个", n)
 
 
 @app.post("/api/v1/models/{model_id}/photos/chunk", dependencies=[Depends(verify_api_key)])
@@ -624,6 +627,289 @@ def get_thumb(filename: str):
         return FileResponse(src)
     return FileResponse(thumb, media_type="image/jpeg",
                         headers={"Cache-Control": "public, max-age=31536000, immutable"})
+
+
+# ---------- 导入导出（v1.3.0 数据迁移/备份） ----------
+
+# 导入临时目录与照片/数据库同卷（数据卷），24h 清理；导出临时文件响应后即删。
+IMPORT_TMP_DIR = os.path.join(DATA_DIR, ".import_tmp")
+MAX_IMPORT_BYTES = 200 * 1024 * 1024  # 整包（合并后 ZIP）上限
+
+
+def _cleanup_import_tmp(max_age=UPLOADS_TTL):
+    """删除过期导入临时会话（块目录 / 合并包 / 解包暂存）。返回删除数。"""
+    if not os.path.isdir(IMPORT_TMP_DIR):
+        return 0
+    now, removed = time.time(), 0
+    for d in os.listdir(IMPORT_TMP_DIR):
+        p = os.path.join(IMPORT_TMP_DIR, d)
+        try:
+            if now - os.path.getmtime(p) > max_age:
+                if os.path.isdir(p):
+                    shutil.rmtree(p, ignore_errors=True)
+                else:
+                    os.remove(p)
+                removed += 1
+        except OSError:
+            pass
+    return removed
+
+
+def _valid_photo_name(fn):
+    """ZIP 条目/磁盘文件名是否为合法照片名（zip-slip 防护：只认 basename + 白名单）。"""
+    if not fn or fn != os.path.basename(fn) or not SAFE_NAME_RE.match(fn) or fn.startswith("."):
+        return False
+    ext = fn.lower().rsplit(".", 1)[-1] if "." in fn else ""
+    return ext in ALLOWED_EXTS
+
+
+@app.get("/api/v1/export", dependencies=[Depends(verify_api_key)])
+def export_data(background_tasks: BackgroundTasks,
+                include_photos: int = Query(1, ge=0, le=1),
+                include_amap: int = Query(0, ge=0, le=1)):
+    """全量导出 ZIP（临时文件流式组装，不占大内存）。
+    include_amap=1 且已配置 amap_key → pyzipper AES 加密包 + 种子文件；
+    include_amap=1 但 amap_key 为空 → 降级明文包，响应头 X-Export-Note 说明原因。"""
+    cfg = db.get_config()
+    amap_empty = not (cfg.get("amap_key") or "").strip()
+    encrypt = bool(include_amap) and not amap_empty
+    payload = db.export_payload(app.version, include_amap=encrypt)
+    ts = time.strftime("%Y%m%d_%H%M%S")
+    seed_name = None
+    if encrypt:
+        seed_name = time.strftime("%Y%m%d%H%M%S") + ".seed"
+        payload["seed"] = seed_name
+
+    tmp_dir = os.path.join(DATA_DIR, ".export_tmp")
+    os.makedirs(tmp_dir, exist_ok=True)
+    tmp_path = os.path.join(tmp_dir, f"hangar-export-{ts}.zip")
+    try:
+        if encrypt:
+            zf = pyzipper.AESZipFile(tmp_path, "w", encryption=pyzipper.WZ_AES)
+            zf.setpassword(db.generate_password_v2(seed_name).encode())
+        else:
+            zf = zipfile.ZipFile(tmp_path, "w", zipfile.ZIP_DEFLATED, allowZip64=True)
+        with zf:
+            if seed_name:
+                zf.writestr(seed_name, b"")
+            zf.writestr("hangar-export.json",
+                        json.dumps(payload, ensure_ascii=False).encode("utf-8"))
+            if include_photos:
+                for fn in sorted(os.listdir(PHOTOS_DIR)):
+                    if not _valid_photo_name(fn):
+                        continue
+                    src = os.path.join(PHOTOS_DIR, fn)
+                    if os.path.isfile(src):
+                        zf.write(src, f"photos/{fn}")
+    except Exception as e:
+        try:
+            os.remove(tmp_path)
+        except OSError:
+            pass
+        raise HTTPException(status_code=500, detail=f"导出失败: {e}")
+
+    headers = {"Content-Disposition": f'attachment; filename="hangar-export-{ts}.zip"'}
+    if include_amap and amap_empty:
+        # HTTP 头只允许 latin-1，中文提示按 RFC 5987 百分号编码，前端 decodeURIComponent 还原
+        headers["X-Export-Note"] = quote("未配置 amap_key，已导出未加密包（不含 Key）")
+    background_tasks.add_task(_remove_quiet, tmp_path)
+    return FileResponse(tmp_path, media_type="application/zip", headers=headers)
+
+
+def _remove_quiet(path):
+    try:
+        os.remove(path)
+    except OSError:
+        pass
+
+
+@app.post("/api/v1/imports/chunk", dependencies=[Depends(verify_api_key)])
+async def import_chunk(upload_id: str = Form(...),
+                       index: int = Form(...),
+                       total: int = Form(...),
+                       file: UploadFile = File(...)):
+    """导入包分块上传（与 photos/chunk 同构，仅接受 .zip）。"""
+    _safe_upload_id(upload_id)
+    if total < 1 or total > 5000 or index < 0 or index >= total:
+        raise HTTPException(status_code=400, detail="index/total 非法")
+    ext = (file.filename or "").lower().rsplit(".", 1)
+    ext = ext[1] if len(ext) == 2 else ""
+    if ext != "zip":
+        raise HTTPException(status_code=400, detail=f"仅支持 .zip: {file.filename}")
+    data = await file.read()
+    if not data:
+        raise HTTPException(status_code=400, detail=f"空块: index={index}")
+    if len(data) > CHUNK_MAX_BYTES:
+        raise HTTPException(status_code=400, detail="块超过 2MB 上限")
+    d = os.path.join(IMPORT_TMP_DIR, upload_id)
+    os.makedirs(d, exist_ok=True)
+    meta_path = os.path.join(d, ".meta")
+    if os.path.isfile(meta_path):
+        try:
+            with open(meta_path, encoding="utf-8") as f:
+                old = json.load(f)
+            if old.get("total") != total:
+                raise HTTPException(status_code=400, detail="同 upload_id 的 total 不一致")
+        except ValueError:
+            pass
+    else:
+        with open(meta_path, "w", encoding="utf-8") as f:
+            json.dump({"ext": "zip", "total": total}, f)
+    part = os.path.join(d, f"{index}.part")
+    tmp = part + ".tmp"
+    with open(tmp, "wb") as out:
+        out.write(data)
+    os.replace(tmp, part)
+    return {"ok": True, "received": index}
+
+
+class ImportCompleteBody(BaseModel):
+    upload_id: str
+
+
+@app.post("/api/v1/imports/complete", dependencies=[Depends(verify_api_key)])
+def import_complete(body: ImportCompleteBody):
+    """合并分块为临时 ZIP，返回 import_token。"""
+    _safe_upload_id(body.upload_id)
+    _maybe_daily_cleanup()
+    d = os.path.join(IMPORT_TMP_DIR, body.upload_id)
+    meta_path = os.path.join(d, ".meta")
+    if not os.path.isdir(d) or not os.path.isfile(meta_path):
+        raise HTTPException(status_code=400, detail="上传会话不存在或已被清理")
+    with open(meta_path, encoding="utf-8") as f:
+        total = json.load(f)["total"]
+    parts = [os.path.join(d, f"{i}.part") for i in range(total)]
+    missing = [i for i, p in enumerate(parts) if not os.path.isfile(p)]
+    if missing:
+        raise HTTPException(status_code=400,
+                            detail={"error": "缺块", "total": total, "missing": missing,
+                                    "received": [i for i in range(total) if i not in missing]})
+    sizes = [os.path.getsize(p) for p in parts]
+    if sum(sizes) > MAX_IMPORT_BYTES:
+        shutil.rmtree(d, ignore_errors=True)
+        raise HTTPException(status_code=413, detail="导入包超过 200MB 上限")
+    zip_path = os.path.join(IMPORT_TMP_DIR, body.upload_id + ".zip")
+    tmp = zip_path + ".merging.tmp"
+    try:
+        with open(tmp, "wb") as out:
+            for p in parts:
+                with open(p, "rb") as src:
+                    shutil.copyfileobj(src, out)
+        os.replace(tmp, zip_path)
+    except OSError as e:
+        _remove_quiet(tmp)
+        raise HTTPException(status_code=500, detail=f"合并写盘失败: {e}")
+    shutil.rmtree(d, ignore_errors=True)
+    return {"import_token": body.upload_id, "size": sum(sizes)}
+
+
+class ImportBody(BaseModel):
+    import_token: str
+    mode: str = "replace"
+
+
+@app.post("/api/v1/imports", dependencies=[Depends(verify_api_key)])
+def run_import(body: ImportBody):
+    """执行导入：校验（结构性错误整包 400 零副作用）→ 解包照片到暂存 →
+    replace/merge 落库 → 照片拷贝 → 清理临时文件。"""
+    if body.mode not in ("replace", "merge"):
+        raise HTTPException(status_code=400, detail="mode 必须是 replace 或 merge")
+    _safe_upload_id(body.import_token)
+    zip_path = os.path.join(IMPORT_TMP_DIR, body.import_token + ".zip")
+    if not os.path.isfile(zip_path):
+        raise HTTPException(status_code=400, detail="导入会话不存在或已被清理")
+    staging = os.path.join(IMPORT_TMP_DIR, body.import_token + ".photos")
+    os.makedirs(staging, exist_ok=True)
+    try:
+        # 1. 打开包（明文/AES 统一走 pyzipper；种子文件名派生密码）
+        try:
+            with pyzipper.AESZipFile(zip_path) as zf:
+                names = zf.namelist()
+                seeds = [n for n in names if n.lower().endswith(".seed")]
+                if seeds:
+                    zf.setpassword(db.generate_password_v2(os.path.basename(seeds[0])).encode())
+                photo_bytes = sum(i.file_size for i in zf.infolist()
+                                  if i.filename.startswith("photos/") and not i.is_dir())
+                if photo_bytes > MAX_IMPORT_BYTES:
+                    raise HTTPException(status_code=413, detail="包内照片超过 200MB 上限")
+                try:
+                    raw = zf.read("hangar-export.json")
+                except (RuntimeError, zipfile.BadZipFile, ValueError) as e:
+                    raise HTTPException(
+                        status_code=400,
+                        detail="无法解密，文件可能损坏或不是合法导出包") from e
+                except KeyError:
+                    raise HTTPException(status_code=400, detail="包内缺少 hangar-export.json")
+                # 2. 解包照片（zip-slip 防护：仅 basename + 白名单扩展名）
+                had_photo_entries = False
+                for n in names:
+                    if not n.startswith("photos/") or n.endswith("/"):
+                        continue
+                    had_photo_entries = True
+                    fn = os.path.basename(n)
+                    if not _valid_photo_name(fn):
+                        continue
+                    with zf.open(n) as src, open(os.path.join(staging, fn), "wb") as out:
+                        shutil.copyfileobj(src, out, 1024 * 1024)
+        except HTTPException:
+            raise
+        except (zipfile.BadZipFile, OSError) as e:
+            raise HTTPException(status_code=400, detail=f"无法解密，文件可能损坏或不是合法导出包") from e
+        staged = {fn for fn in os.listdir(staging) if _valid_photo_name(fn)}
+
+        # 3. 解析 + 整体校验
+        try:
+            payload = json.loads(raw.decode("utf-8"))
+        except (ValueError, UnicodeDecodeError) as e:
+            raise HTTPException(status_code=400, detail=f"hangar-export.json 解析失败: {e}")
+        errors = db.validate_payload(payload)
+        if errors:
+            raise HTTPException(status_code=400, detail=errors)
+
+        # 4. 执行
+        if body.mode == "replace":
+            photos_missing = 0
+            for m in payload["models"]:
+                want = m.get("photos") or []
+                kept = [p for p in want if os.path.basename(p) in staged]
+                photos_missing += len(want) - len(kept)
+                m["photos"] = kept
+            imported = db.import_replace(payload)
+            warnings = []
+            if photos_missing:
+                warnings.append(f"{photos_missing} 张照片在包内缺失，已从 photos 引用中剔除")
+            report = {"mode": "replace", "imported": imported, "skipped": 0,
+                      "photos_imported": len(staged), "photos_missing": photos_missing,
+                      "enum_reset": True, "warnings": warnings}
+        else:
+            def photo_ok(url):
+                fn = os.path.basename(url)
+                return fn in staged or os.path.isfile(os.path.join(PHOTOS_DIR, fn))
+            res = db.import_merge(payload, photo_ok)
+            res["mode"] = "merge"
+            res["photos_imported"] = len(staged)
+            res["enum_reset"] = False
+            report = res
+
+        # 5. 照片落盘（暂存 → PHOTOS_DIR，同名覆盖）
+        for fn in staged:
+            shutil.copyfile(os.path.join(staging, fn), os.path.join(PHOTOS_DIR, fn))
+        # 6. replace 且包内含照片条目时，清理不再被引用的旧照片
+        if body.mode == "replace" and had_photo_entries:
+            refs = set()
+            for m in db.list_models():
+                for p in m.get("photos") or []:
+                    fn = _photo_filename(p)
+                    if fn:
+                        refs.add(fn)
+            for fn in os.listdir(PHOTOS_DIR):
+                if _valid_photo_name(fn) and fn not in refs and os.path.isfile(os.path.join(PHOTOS_DIR, fn)):
+                    _remove_quiet(os.path.join(PHOTOS_DIR, fn))
+                    _remove_quiet(_thumb_path(fn))
+        return report
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)
+        _remove_quiet(zip_path)
 
 
 # ---------- WebUI 入口（无需鉴权，内网自用） ----------

@@ -3,6 +3,49 @@
 All notable changes to this project are documented here.
 This project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.3.0]
+
+### Added
+
+- **Data export/import (backup & migration)**: full archive export as a ZIP
+  (`GET /api/v1/export`) containing `hangar-export.json` + optional `photos/`
+  originals, assembled via streaming temp files (no large in-memory buffers).
+  `include_photos=0|1` toggles photos; `include_amap=0|1` produces an AES-256
+  encrypted package (pyzipper) that additionally carries the amap key — the
+  password is derived from a timestamp `.seed` filename inside the archive
+  (salt + SHA256 → base64 → mid-16), never transmitted or logged. Requesting
+  encryption on an instance without an amap key falls back to a plain package
+  with an `X-Export-Note` header. The token is never exported; `geo_cache` is
+  treated as derived data and excluded.
+- **Chunked resumable import**: `POST /imports/chunk|complete` reuse the 1.2.1
+  parallel chunk mechanism (1 MB chunks, 3-worker pool, byte progress,
+  resume-on-missing) so 50–150 MB archives survive slow DERP links; `POST
+  /imports` executes the import with `mode=replace` (wipe + rebuild, CHECK
+  constraints regenerated from the archive's enums, all in one transaction) or
+  `mode=merge` (per-id upsert, current enums untouched). Structural validation
+  rejects the whole archive with a 400 error list and zero side effects;
+  missing photos are recorded as `photos_missing` without failing the import.
+  ZIP extraction is zip-slip safe (basename + extension whitelist).
+- **WebUI**: an import/export icon button in the header toolbar (left of the
+  theme picker) opens a menu; a reusable dialog component (`dialog.js`) carries
+  the export options, import mode choice (with a hard confirmation gate for
+  replace), and upload progress. An empty library imports directly in replace
+  mode without confirmation. All new icons (backup/restore entry, photo delete,
+  photo move up/down) are inlined SVGs — no external icon files.
+- New dependency `pyzipper` (pulls `pycryptodome`).
+
+## [1.2.1]
+
+### Performance
+
+- **Parallel chunk upload**: files are now split into 1 MB chunks (was 2 MB)
+  and sent through a 3-worker pool per file, greatly improving throughput on
+  high-latency (DERP) links. Files are still uploaded one at a time. A chunk
+  that fails retries with the same 1s/2s/4s backoff; if it exhausts retries the
+  file pauses while already-succeeded chunks are kept — resuming only re-sends
+  the missing chunks (server-side idempotency). Progress text switched from
+  chunk counters to aggregated bytes (`已传 x/y MB（z%）`, monotonic).
+
 ## [1.2.0]
 
 ### Added

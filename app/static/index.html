@@ -28,6 +28,21 @@
       </span>
     </div>
     <div class="header-right">
+      <div class="theme-picker" id="io-picker">
+        <button id="btn-io" class="theme-trigger" type="button" title="导入 / 导出">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path fill="currentColor" d="M3.5 8V6.25c0-.966.784-1.75 1.75-1.75h2.879a.75.75 0 0 1 .53.22l1.53 1.53l-1.53 1.53a.75.75 0 0 1-.53.22zm1.75-5A3.25 3.25 0 0 0 2 6.25v11.5A3.25 3.25 0 0 0 5.25 21h7.275l-1.012-1.013a1.8 1.8 0 0 1-.345-.487H5.25a1.75 1.75 0 0 1-1.75-1.75V9.5h4.629a2.25 2.25 0 0 0 1.59-.659L11.562 7h7.189c.966 0 1.75.784 1.75 1.75v5.918c.176.084.342.199.487.345L22 16.025V8.75a3.25 3.25 0 0 0-3.25-3.25h-7.19L9.72 3.659A2.25 2.25 0 0 0 8.129 3zm10.53 13.78a.75.75 0 1 0-1.06-1.06l-2.5 2.5a.75.75 0 0 0 0 1.06l2.5 2.5a.75.75 0 1 0 1.06-1.06l-1.22-1.22h5.88l-1.22 1.22a.75.75 0 1 0 1.06 1.06l2.5-2.5a.75.75 0 0 0 0-1.06l-2.5-2.5a.75.75 0 1 0-1.06 1.06L20.44 18h-5.88z"/></svg>
+        </button>
+        <div class="theme-menu hidden" id="io-menu">
+          <button data-io="export" type="button">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path fill="currentColor" d="M11 16h2V7h3l-4-5l-4 5h3z"/><path fill="currentColor" d="M5 22h14c1.103 0 2-.897 2-2v-9c0-1.103-.897-2-2-2h-4v2h4v9H5v-9h4V9H5c-1.103 0-2 .897-2 2v9c0 1.103.897 2 2 2"/></svg>
+            备份导出
+          </button>
+          <button data-io="import" type="button">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path fill="currentColor" d="m12 18l4-5h-3V2h-2v11H8z"/><path fill="currentColor" d="M19 9h-4v2h4v9H5v-9h4V9H5c-1.103 0-2 .897-2 2v9c0 1.103.897 2 2 2h14c1.103 0 2-.897 2-2v-9c0-1.103-.897-2-2-2"/></svg>
+            恢复导入
+          </button>
+        </div>
+      </div>
       <div class="theme-picker" id="theme-picker">
         <button id="theme-trigger" class="theme-trigger" type="button" title="主题">
           <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path fill="currentColor" d="M22.6 11.29L20 8.69V5c0-.55-.45-1-1-1h-3.69l-2.6-2.6a.996.996 0 0 0-1.41 0L8.69 4H5c-.55 0-1 .45-1 1v3.69l-2.6 2.6a.996.996 0 0 0 0 1.41L4 15.3V19c0 .55.45 1 1 1h3.69l2.6 2.6c.39.39 1.02.39 1.41 0l2.6-2.6H19c.55 0 1-.45 1-1v-3.69l2.6-2.6c.39-.39.39-1.03 0-1.42m-4.68 1.69a6 6 0 0 1-3.88 4.66c-1.21.43-2.41.45-3.5.18c-.41-.1-.48-.65-.13-.9C11.98 15.84 13 14.04 13 12s-1.02-3.84-2.58-4.92c-.35-.24-.29-.79.13-.9c1.09-.27 2.29-.25 3.5.18c2.02.72 3.54 2.54 3.88 4.66c.05.33.07.66.07.98c-.01.32-.03.65-.08.98"/></svg>
@@ -134,7 +149,7 @@
   </main>
 
   <footer id="app-footer">
-    <span class="muted">Hangar v1.2.0</span>
+    <span class="muted" id="app-version">Hangar</span>
   </footer>
 
   <!-- 详情模态框 -->

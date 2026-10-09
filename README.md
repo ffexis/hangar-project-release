@@ -79,6 +79,8 @@ DELETE /api/v1/models/{id}
 POST   /api/v1/models/{id}/photos            # multipart upload (jpg/png/webp/gif, ≤20MB)
 DELETE /api/v1/models/{id}/photos/{filename}
 GET    /api/v1/models/{id}/photos/{filename}/meta  # EXIF + address (no auth)
+GET    /api/v1/export?include_photos=&include_amap=  # ZIP backup (encrypted when amap included)
+POST   /api/v1/imports/chunk | /imports/complete | /imports  # chunked upload + replace/merge import
 ```
 
 ## Development
@@ -88,7 +90,7 @@ pip install -r requirements.txt
 uvicorn app.main:app --reload --port 8333
 ```
 
-Stack: Python 3.11+, FastAPI, Pillow (+piexif for tests), vanilla JS/CSS frontend.
+Stack: Python 3.11+, FastAPI, Pillow, pyzipper (+piexif for tests), vanilla JS/CSS frontend.
 
 ## Known limitations
 

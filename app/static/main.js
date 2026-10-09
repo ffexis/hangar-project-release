@@ -9,6 +9,7 @@ import {
 import { openForm, initForm } from "./form.js";
 import { closeDetail, initDetail } from "./detail.js";
 import { closeLightbox, lightboxOpen } from "./lightbox.js";
+import { initImportExport } from "./importexport.js";
 
 export async function refreshAll() {
   try {
@@ -26,6 +27,7 @@ async function init() {
     const r = await fetch("/api/v1/status");
     const j = await r.json();
     if (!j.initialized) { location.replace("/setup"); return; }
+    if (j.version) $("#app-version").textContent = `Hangar v${j.version}`;
   } catch (e) { /* 状态查询失败不阻断，交由后续请求的 403 处理 */ }
 
   initTheme();
@@ -55,6 +57,7 @@ async function init() {
   });
 
   initDetail();
+  initImportExport();
 
   document.addEventListener("keydown", (e) => {
     if (e.key !== "Escape") return;

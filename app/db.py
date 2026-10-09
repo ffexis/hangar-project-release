@@ -1,4 +1,6 @@
-"""SQLite 数据层：建表 + CRUD + 初始化配置（settings 单行 JSON）。"""
+"""SQLite 数据层：建表 + CRUD + 初始化配置（settings 单行 JSON）+ 导入导出。"""
+import base64
+import hashlib
 import json
 import os
 import re
@@ -371,3 +373,215 @@ def geo_cache_put(lat, lng, address):
 def _geo_key(lat, lng):
     # 4 位小数约 11m 网格，同一地点的多张照片可共享缓存
     return f"{round(lat, 4):.4f},{round(lng, 4):.4f}"
+
+
+# ---------- 导入导出（v1.3.0 数据迁移/备份） ----------
+
+SUPPORTED_FORMAT_VERSIONS = [1]
+
+# 加密包密码派生盐（算法与 toybox evo 同款：盐+文件名 → SHA256 → base64 → 取中段 16 位）。
+# 威胁模型 = 内网单人工具防"文件被随手打开"，不防专业攻击者，算法公开无妨。
+BACKUP_SALT = "HANGAR_BACKUP_SALT_2026"
+
+_IMPORT_ID_RE = re.compile(r"M\d+\Z")
+_IMPORT_DATE_RE = re.compile(r"\d{4}-\d{2}-\d{2}\Z")
+# 导入必填字段（与建表 NOT NULL + CHECK 对应）
+_IMPORT_REQUIRED = ("name", "category", "limited", "origin", "status", "storage")
+
+
+def generate_password_v2(seed_name):
+    """从种子文件名（去掉 .seed 后缀）派生 ZIP 密码；密码不落盘、不传输。"""
+    stem = seed_name[:-5] if seed_name.endswith(".seed") else seed_name
+    salted = f"{stem}:{BACKUP_SALT}"
+    encoded = base64.b64encode(hashlib.sha256(salted.encode()).digest()).decode()
+    return encoded[18:34]
+
+
+def export_payload(app_version, include_amap):
+    """组装 hangar-export.json 结构。token 永不导出；amap_key 仅加密包携带。"""
+    cfg = get_config()
+    payload = {
+        "format_version": 1,
+        "exported_at": now_iso(),
+        "app_version": app_version,
+        "encrypted": bool(include_amap),
+        "enums": {
+            "categories": list(cfg["categories"]),
+            "statuses": list(cfg["statuses"]),
+            "soft_defaults": {f: list(cfg["soft_defaults"].get(f) or []) for f in SOFT_FIELDS},
+        },
+        "models": list_models(),
+    }
+    if include_amap:
+        payload["amap_key"] = cfg.get("amap_key", "")
+    return payload
+
+
+def validate_payload(payload):
+    """导入前整体校验，返回错误列表（空 = 通过）。枚举合法性用导入文件自带的 enums。"""
+    errors = []
+    if not isinstance(payload, dict):
+        return ["导出文件必须是 JSON 对象"]
+    if payload.get("format_version") not in SUPPORTED_FORMAT_VERSIONS:
+        errors.append(f"不支持的 format_version: {payload.get('format_version')!r}")
+    enums = payload.get("enums")
+    if not isinstance(enums, dict):
+        errors.append("缺少 enums 对象")
+        enums = {}
+    cats, stats = enums.get("categories"), enums.get("statuses")
+    for name, val in (("categories", cats), ("statuses", stats)):
+        if not (isinstance(val, list) and val
+                and all(isinstance(x, str) and x.strip() for x in val)):
+            errors.append(f"enums.{name} 必须是非空字符串数组")
+    soft = enums.get("soft_defaults")
+    if soft is not None and not isinstance(soft, dict):
+        errors.append("enums.soft_defaults 必须是对象")
+    models = payload.get("models")
+    if not isinstance(models, list):
+        errors.append("models 必须是数组")
+        models = []
+    seen = set()
+    for i, m in enumerate(models):
+        p = f"models[{i}]"
+        if not isinstance(m, dict):
+            errors.append(f"{p} 必须是对象")
+            continue
+        mid = m.get("id")
+        if not (isinstance(mid, str) and _IMPORT_ID_RE.match(mid)):
+            errors.append(f"{p}.id 非法（需 M+数字）: {mid!r}")
+        elif mid in seen:
+            errors.append(f"id 重复: {mid}")
+        else:
+            seen.add(mid)
+        for f in _IMPORT_REQUIRED:
+            v = m.get(f)
+            if not (isinstance(v, str) and v.strip()):
+                errors.append(f"{p}.{f} 必填且不能为空")
+        if isinstance(m.get("category"), str) and m["category"] and cats and m["category"] not in cats:
+            errors.append(f"{p}.category 不在导入文件枚举内: {m['category']!r}")
+        if isinstance(m.get("status"), str) and m["status"] and stats and m["status"] not in stats:
+            errors.append(f"{p}.status 不在导入文件枚举内: {m['status']!r}")
+        for f in ("photos", "tags"):
+            v = m.get(f)
+            if v is not None and not (isinstance(v, list) and all(isinstance(x, str) for x in v)):
+                errors.append(f"{p}.{f} 必须是字符串数组")
+        for f in ("purchase_date", "done_date"):
+            v = m.get(f)
+            if v not in (None, "") and not (isinstance(v, str) and _IMPORT_DATE_RE.match(v)):
+                errors.append(f"{p}.{f} 日期格式必须是 YYYY-MM-DD: {v!r}")
+    if "amap_key" in payload and not isinstance(payload["amap_key"], str):
+        errors.append("amap_key 必须是字符串")
+    return errors
+
+
+def _model_insert_row(m):
+    """导入条目 → 建表列值（photos/tags 转 JSON 串，tags 走统一清洗）。"""
+    row = {}
+    for f in FIELDS:
+        row[f] = m.get(f)
+    row["display"] = 1 if m.get("display") else 0
+    row["owner"] = m.get("owner") or ""
+    row["updated_at"] = m.get("updated_at") or now_iso()
+    row["photos"] = json.dumps(m.get("photos") or [], ensure_ascii=False)
+    row["tags"] = json.dumps(normalize_tags(m.get("tags")), ensure_ascii=False)
+    return row
+
+
+def import_replace(payload):
+    """覆盖式导入（恢复备份语义）：刷新枚举 → 重建 models 表（CHECK 随新枚举）→
+    事务内清空全量插入。settings + DDL + 数据在同一事务，失败整体回滚零副作用。
+    照片落盘/清理由调用方（API 层）处理。返回导入条数。"""
+    global _config
+    cfg = get_config()
+    enums = payload["enums"]
+    # 在副本上变更，提交成功后才替换缓存——回滚时缓存保持旧值
+    new_cfg = dict(cfg)
+    new_cfg["categories"] = [str(x).strip()[:32] for x in enums["categories"] if str(x).strip()]
+    new_cfg["statuses"] = [str(x).strip()[:32] for x in enums["statuses"] if str(x).strip()]
+    soft = enums.get("soft_defaults") or {}
+    new_cfg["soft_defaults"] = {
+        f: [str(x).strip()[:32] for x in (soft.get(f) or []) if str(x).strip()]
+        for f in SOFT_FIELDS
+    }
+    if isinstance(payload.get("amap_key"), str) and payload["amap_key"]:
+        new_cfg["amap_key"] = payload["amap_key"]
+    conn = _conn()
+    try:
+        # settings 写入不加 commit，与 DDL/数据同事务
+        conn.execute(
+            "INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)",
+            (CONFIG_KEY, json.dumps(new_cfg, ensure_ascii=False)),
+        )
+        conn.execute("DROP TABLE IF EXISTS models")
+        conn.execute(_models_ddl(new_cfg))
+        cols = ", ".join(FIELDS)
+        marks = ", ".join("?" * len(FIELDS))
+        for m in payload["models"]:
+            row = _model_insert_row(m)
+            conn.execute(
+                f"INSERT INTO models ({cols}) VALUES ({marks})",
+                [row[f] for f in FIELDS],
+            )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+    _config = new_cfg
+    return len(payload["models"])
+
+
+def import_merge(payload, photo_ok=None):
+    """合并式导入：按 id upsert，不动现有枚举/数据。
+    - category/status 不在当前枚举 → 该条 skipped + warning（不扩枚举）。
+    - 已存在 → update；photos 整体替换，但磁盘缺失的引用过滤掉；
+      若全部缺失且现有记录有照片 → 降级保留现有 photos + warning。
+    - 不存在 → insert。
+    photo_ok(url) 由调用方提供（检查暂存目录/磁盘），None 视为全部可用。
+    返回 {imported, skipped, photos_missing, warnings}。"""
+    cfg = get_config()
+    conn = _conn()
+    imported = skipped = photos_missing = 0
+    warnings = []
+    try:
+        for m in payload["models"]:
+            mid = m["id"]
+            if m["category"] not in cfg["categories"]:
+                skipped += 1
+                warnings.append(f"{mid}: category「{m['category']}」不在当前枚举，跳过")
+                continue
+            if m["status"] not in cfg["statuses"]:
+                skipped += 1
+                warnings.append(f"{mid}: status「{m['status']}」不在当前枚举，跳过")
+                continue
+            row = _model_insert_row(m)
+            want = m.get("photos") or []
+            existing = conn.execute("SELECT photos FROM models WHERE id = ?", (mid,)).fetchone()
+            if photo_ok and want:
+                kept = [p for p in want if photo_ok(p)]
+                dropped = len(want) - len(kept)
+                photos_missing += dropped
+                if dropped:
+                    if existing and not kept:
+                        kept = json.loads(existing["photos"] or "[]")
+                        warnings.append(f"{mid}: 导入照片全部缺失，保留现有 photos")
+                    else:
+                        warnings.append(f"{mid}: {dropped} 张照片缺失，已从 photos 中剔除")
+            row["photos"] = json.dumps(kept if (photo_ok and want) else want, ensure_ascii=False)
+            cols = ", ".join(FIELDS)
+            marks = ", ".join("?" * len(FIELDS))
+            conn.execute(
+                f"INSERT INTO models ({cols}) VALUES ({marks}) "
+                f"ON CONFLICT(id) DO UPDATE SET {', '.join(f + '=excluded.' + f for f in FIELDS if f != 'id')}",
+                [row[f] for f in FIELDS],
+            )
+            imported += 1
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+    return {"imported": imported, "skipped": skipped,
+            "photos_missing": photos_missing, "warnings": warnings}

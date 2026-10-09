@@ -11,11 +11,13 @@ const FIELD_LABELS = {
   comment: "评价 / 备注", photos: "照片", tags: "标签",
 };
 
-// 分块大小 2MB（服务端上限同为 2MB）；弱网可调小，块越小单次失败重传代价越小
-const CHUNK_SIZE = 2 * 1024 * 1024;
+// 分块大小 1MB（服务端 CHUNK_MAX_BYTES=2MB 校验保持不变，留余量）；块越小单次失败重传代价越小
+const CHUNK_SIZE = 1024 * 1024;
+// 每文件内块并发数；文件之间仍逐张串行，避免浏览器连接被多文件抢满、状态文字混乱
+const CONCURRENCY = 3;
 
 let DETAIL_MODEL = null;
-let UPLOAD = null; // 分块上传会话 {files, fi, ci, uploadId, ok, fail}
+let UPLOAD = null; // 分块上传会话 {files, fi, done:Set, uploadId, ok, fail, paused}
 
 export async function showDetail(id) {
   const m = await api("/api/v1/models/" + encodeURIComponent(id));
@@ -72,7 +74,7 @@ function renderPhotos(m) {
     if (LOGGED_IN) {
       const del = document.createElement("button");
       del.className = "photo-del";
-      del.textContent = "×";
+      del.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 36 36"><path fill="currentColor" d="m19.61 18l4.86-4.86a1 1 0 0 0-1.41-1.41l-4.86 4.81l-4.89-4.89a1 1 0 0 0-1.41 1.41L16.78 18L12 22.72a1 1 0 1 0 1.41 1.41l4.77-4.77l4.74 4.74a1 1 0 0 0 1.41-1.41Z"/><path fill="currentColor" d="M18 34a16 16 0 1 1 16-16a16 16 0 0 1-16 16m0-30a14 14 0 1 0 14 14A14 14 0 0 0 18 4"/></svg>';
       del.title = "删除这张";
       del.onclick = () => deletePhoto(m.id, p);
       cell.appendChild(del);
@@ -80,12 +82,12 @@ function renderPhotos(m) {
       const mv = document.createElement("div");
       mv.className = "photo-move";
       const up = document.createElement("button");
-      up.textContent = "↑";
+      up.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-linecap="round" stroke-width="1.5"><circle cx="12" cy="12" r="10"/><path stroke-linejoin="round" d="M15 13.5L12 10.5L9 13.5"/></g></svg>';
       up.title = "上移";
       up.disabled = i === 0;
       up.onclick = () => movePhoto(i, i - 1);
       const dn = document.createElement("button");
-      dn.textContent = "↓";
+      dn.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-linecap="round" stroke-width="1.5"><circle cx="12" cy="12" r="10"/><path stroke-linejoin="round" d="M15 10.5L12 13.5L9 10.5"/></g></svg>';
       dn.title = "下移";
       dn.disabled = i === photos.length - 1;
       dn.onclick = () => movePhoto(i, i + 1);
@@ -125,7 +127,7 @@ async function deletePhoto(id, url) {
 }
 
 async function uploadPhotos(files) {
-  UPLOAD = { files: Array.from(files), fi: 0, ci: 0, uploadId: null, ok: 0, fail: 0, paused: false };
+  UPLOAD = { files: Array.from(files), fi: 0, done: new Set(), uploadId: null, ok: 0, fail: 0, paused: false };
   await runUpload();
 }
 
@@ -143,14 +145,26 @@ async function rawReq(path, opts) {
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-function progressText() {
-  const u = UPLOAD;
+// 当前文件已传字节（done 块的真实字节和，末块按实际长度计；在途块不计，保证单调不回跳）
+function doneBytesOfCurrentFile(u) {
   const file = u.files[u.fi];
   const chunks = Math.ceil(file.size / CHUNK_SIZE) || 1;
+  let bytes = 0;
+  for (const i of u.done) {
+    bytes += (i === chunks - 1) ? file.size - i * CHUNK_SIZE : CHUNK_SIZE;
+  }
+  return bytes;
+}
+
+// 进度文字按字节聚合（并发后块号不再单调递增）
+function progressText() {
+  const u = UPLOAD;
   const totalBytes = u.files.reduce((s, f) => s + f.size, 0) || 1;
-  const doneBytes = u.files.slice(0, u.fi).reduce((s, f) => s + f.size, 0) + u.ci * CHUNK_SIZE;
+  const priorBytes = u.files.slice(0, u.fi).reduce((s, f) => s + f.size, 0);
+  const doneBytes = priorBytes + doneBytesOfCurrentFile(u);
   const pct = Math.min(99, Math.round((doneBytes / totalBytes) * 100));
-  return `上传中 ${u.fi + 1}/${u.files.length} 张 · 块 ${u.ci + 1}/${chunks}（${pct}%）`;
+  const mb = (n) => (n / (1024 * 1024)).toFixed(1);
+  return `上传中 ${u.fi + 1}/${u.files.length} 张 · 已传 ${mb(doneBytes)}/${mb(totalBytes)}MB（${pct}%）`;
 }
 
 function setPaused(pause) {
@@ -170,33 +184,17 @@ async function runUpload() {
     if (!u.uploadId) u.uploadId = uuidv4();
     const chunks = Math.ceil(file.size / CHUNK_SIZE) || 1;
     const id = encodeURIComponent(DETAIL_MODEL.id);
-    let paused = false;
-    while (u.ci < chunks) {
-      const blob = file.slice(u.ci * CHUNK_SIZE, Math.min((u.ci + 1) * CHUNK_SIZE, file.size));
-      let sent = false, authFail = false;
-      for (let attempt = 0; attempt < 4 && !sent; attempt++) {
-        if (attempt) await sleep(1000 * 2 ** (attempt - 1)); // 退避 1s/2s/4s
-        status.textContent = progressText();
-        const fd = new FormData();
-        fd.append("upload_id", u.uploadId);
-        fd.append("index", String(u.ci));
-        fd.append("total", String(chunks));
-        fd.append("file", blob, file.name);
-        const r = await rawReq(`/api/v1/models/${id}/photos/chunk`, { method: "POST", body: fd });
-        if (r.status === 200) sent = true;
-        else if (r.status === 401) { authFail = true; break; }
-      }
-      if (authFail) { u.fail++; u.fi++; u.ci = 0; u.uploadId = null; break; }
-      if (!sent) { paused = true; break; }
-      u.ci++;
+    const result = await uploadFileWithChunks(u, id, file, chunks);
+    if (result === "authFail") {
+      u.fail++; u.fi++; u.done = new Set(); u.uploadId = null;
+      continue;
     }
-    if (paused) {
+    if (result === "paused") {
       status.textContent = "已暂停（网络中断），点击上传按钮续传";
       setPaused(true);
       btn.disabled = false;
       return;
     }
-    if (u.fi >= u.files.length) break; // 401 跳完剩余文件
     // 全部块就绪 → complete；若服务端报缺块则补传缺失块后重试一次
     let done = await tryComplete(u, id);
     if (!done.ok && done.missing) {
@@ -210,13 +208,46 @@ async function runUpload() {
     } else {
       u.fail++;
     }
-    u.fi++; u.ci = 0; u.uploadId = null;
+    u.fi++; u.done = new Set(); u.uploadId = null;
   }
   btn.disabled = false;
   setPaused(false);
   status.textContent = `完成：成功 ${u.ok}${u.fail ? "，失败 " + u.fail : ""}`;
   UPLOAD = null;
   loadList();
+}
+
+// worker pool：CONCURRENCY 个并发发送本文件的各块；文件之间仍逐张串行。
+// 返回 "ok" | "paused" | "authFail"。
+async function uploadFileWithChunks(u, id, file, chunks) {
+  const queue = [];
+  for (let i = 0; i < chunks; i++) if (!u.done.has(i)) queue.push(i);
+  const flags = { paused: false, authFail: false };
+  const status = $("#upload-status");
+  const worker = async () => {
+    while (!flags.paused && !flags.authFail && queue.length) {
+      const i = queue.shift();
+      let sent = false;
+      for (let attempt = 0; attempt < 4 && !sent && !flags.authFail; attempt++) {
+        if (attempt) await sleep(1000 * 2 ** (attempt - 1)); // 退避 1s/2s/4s
+        status.textContent = progressText();
+        const fd = new FormData();
+        fd.append("upload_id", u.uploadId);
+        fd.append("index", String(i));
+        fd.append("total", String(chunks));
+        fd.append("file", file.slice(i * CHUNK_SIZE, Math.min((i + 1) * CHUNK_SIZE, file.size)), file.name);
+        const r = await rawReq(`/api/v1/models/${id}/photos/chunk`, { method: "POST", body: fd });
+        if (r.status === 200) sent = true;
+        else if (r.status === 401) flags.authFail = true;
+      }
+      if (sent) { u.done.add(i); status.textContent = progressText(); }
+      else if (!flags.authFail) flags.paused = true; // 重试耗尽 → 该文件暂停
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(CONCURRENCY, chunks) }, worker));
+  if (flags.authFail) return "authFail";
+  if (flags.paused) return "paused";
+  return "ok";
 }
 
 async function tryComplete(u, id) {
