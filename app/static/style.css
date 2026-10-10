@@ -29,6 +29,8 @@
 }
 
 * { box-sizing: border-box; }
+/* 预留滚动条槽位：弹窗打开时 body overflow:hidden 不会导致页面横向偏移 */
+html { scrollbar-gutter: stable; }
 
 body {
   margin: 0;
@@ -163,6 +165,7 @@ main { padding: 18px 20px; max-width: 1400px; margin: 0 auto; }
 .btn:hover { border-color: var(--accent); }
 .btn.primary { background: var(--accent2); border-color: var(--accent); color: #fff; }
 .btn.primary:hover { background: var(--accent); }
+.btn:disabled { opacity: .45; cursor: default; pointer-events: none; }
 .btn-sm {
   padding: 5px 12px;
   border-radius: 6px;
@@ -426,21 +429,23 @@ textarea { resize: vertical; }
   position: absolute;
   top: 6px;
   right: 6px;
-  width: 24px;
-  height: 24px;
+  width: 22px;
+  height: 22px;
   border-radius: 50%;
   border: none;
   background: rgba(0, 0, 0, .55);
-  color: #fff;
+  color: rgba(255, 255, 255, .85);
   font-size: 15px;
   line-height: 1;
   cursor: pointer;
+  padding: 0;
   display: flex;
   align-items: center;
   justify-content: center;
 }
 .photo-del:hover { background: var(--err); }
-.photo-del svg { width: 14px; height: 14px; display: block; }
+/* 图标内自带圆环（viewBox 36，圆外径 32）；放大到 112.5% 使圆环与圆形背景等大 */
+.photo-del svg { width: 112.5%; height: 112.5%; display: block; flex-shrink: 0; }
 .photo-move {
   position: absolute;
   bottom: 6px;
@@ -454,7 +459,7 @@ textarea { resize: vertical; }
   border-radius: 50%;
   border: none;
   background: rgba(0, 0, 0, .55);
-  color: #fff;
+  color: rgba(255, 255, 255, .85);
   font-size: 13px;
   line-height: 1;
   cursor: pointer;
@@ -463,7 +468,8 @@ textarea { resize: vertical; }
   align-items: center;
   justify-content: center;
 }
-.photo-move button svg { width: 14px; height: 14px; display: block; }
+/* 图标内自带圆圈（viewBox 24，描边外缘直径约 21.5）；放大到 111.6% 使圆圈与圆形背景等大 */
+.photo-move button svg { width: 111.6%; height: 111.6%; display: block; flex-shrink: 0; }
 .photo-move button:hover:not(:disabled) { background: var(--accent); }
 .photo-move button:disabled { opacity: .3; cursor: default; }
 
@@ -509,6 +515,18 @@ textarea { resize: vertical; }
 }
 .lb-info a { color: #9cc0ff; }
 .lb-item { white-space: nowrap; }
+/* HDR 徽章：金色描边小角标，深浅主题均可读 */
+.lb-hdr {
+  border: 1px solid #e8b34b;
+  color: #e8b34b;
+  border-radius: 4px;
+  padding: 0 5px;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.6;
+  letter-spacing: .5px;
+  cursor: help;
+}
 
 .lb-nav {
   position: absolute;
@@ -609,14 +627,19 @@ body.modal-open { overflow: hidden; }
 .modal input { width: 100%; margin-top: 10px; }
 
 .login-error { color: var(--err); font-size: 13px; margin: 8px 0 0; }
+/* 登录框按钮靠右下，确认（登录）在最右；HTML 顺序保持不变以兼容移动端 column-reverse */
+#modal-mask .form-actions { justify-content: flex-end; flex-direction: row-reverse; }
 
 /* ---------- 通用对话框（dialog.js） ---------- */
 
 .dlg-modal { width: min(440px, calc(100vw - 40px)); }
+/* 对话框按钮统一靠右下，确认（primary）在最右 */
+.dlg-modal .form-actions { justify-content: flex-end; }
 .dlg-body { margin-top: 4px; }
 .dlg-body p { margin: 6px 0; }
 .dlg-check, .dlg-radio {
   display: flex;
+  flex-direction: row;
   align-items: center;
   gap: 8px;
   margin: 10px 0;
@@ -631,6 +654,9 @@ body.modal-open { overflow: hidden; }
 }
 .dlg-status { min-height: 1.4em; font-size: 13px; margin: 10px 0 0; line-height: 1.6; }
 .dlg-warn { color: var(--err); }
+/* 导出打包进度条 */
+.dlg-progress { height: 6px; border-radius: 3px; background: var(--panel2); overflow: hidden; margin: 12px 0 0; }
+.dlg-progress-bar { height: 100%; width: 0; border-radius: 3px; background: var(--accent); transition: width .5s ease; }
 
 /* ---------- Footer ---------- */
 
@@ -776,8 +802,8 @@ main { padding-bottom: 44px; }
   .btn-sm#btn-upload { padding: 6px 8px; }
   #btn-upload .up-label { display: none; }
   #btn-upload .up-icon { display: block; width: 18px; height: 18px; }
-  /* 删除角标缩小 */
-  .photo-del { width: 22px; height: 22px; font-size: 15px; top: 4px; right: 4px; }
+  /* 删除角标缩小（与移动按钮保持同尺寸） */
+  .photo-del { width: 20px; height: 20px; font-size: 15px; top: 4px; right: 4px; }
   .photo-move { bottom: 4px; right: 4px; gap: 3px; }
   .photo-move button { width: 20px; height: 20px; font-size: 12px; }
 
@@ -830,4 +856,5 @@ main { padding-bottom: 44px; }
   .theme-trigger { width: 44px; height: 44px; }
   .theme-trigger svg { width: 24px; height: 24px; }
   .photo-del { width: 24px; height: 24px; font-size: 15px; }
+  .photo-move button { width: 24px; height: 24px; }
 }

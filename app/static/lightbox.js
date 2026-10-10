@@ -97,6 +97,14 @@ function showLbPhoto() {
       const date = fmtTaken(m.taken_at);
       if (date) add(date);
       if (m.device) add(m.device);
+      if (m.hdr) {
+        // Ultra HDR 原片标记：浏览器对 gain map 支持不一（可能显示偏暗/发黑），提示换支持设备查看
+        const b = document.createElement("span");
+        b.className = "lb-hdr";
+        b.textContent = "HDR";
+        b.title = "Ultra HDR 照片（含 gain map）：部分浏览器不支持会显示偏暗，请在支持 HDR 的设备/浏览器查看";
+        info.appendChild(b);
+      }
       const params = exifParams(m);
       if (params) {
         const s = document.createElement("span");

@@ -7,7 +7,9 @@ import os
 import re
 import secrets
 import shutil
+import threading
 import time
+import uuid
 import zipfile
 from typing import Optional
 from urllib.parse import quote
@@ -44,7 +46,20 @@ SAFE_NAME_RE = re.compile(r"[A-Za-z0-9_.-]+\Z")
 # 部分环境 mimetypes 未内置 .webmanifest，注册以确保 manifest 以正确 MIME 提供（PWA 安装要求）
 mimetypes.add_type("application/manifest+json", ".webmanifest")
 
-app = FastAPI(title="Hangar Project", version="1.3.0")
+app = FastAPI(title="Hangar Project", version="1.3.2")
+
+
+@app.middleware("http")
+async def no_cache_code_assets(request, call_next):
+    """代码类静态资源（js/css/html/manifest）强制协商缓存：
+    每次发 If-Modified-Since，未变返回 304。修复 v1.3.2 事故——
+    无 Cache-Control 时浏览器启发式缓存旧 dialog.js，与新 importexport.js
+    混用导致 setLocked 缺失、导出流程静默崩溃。"""
+    response = await call_next(request)
+    p = request.url.path
+    if p.endswith((".js", ".css", ".html", ".webmanifest")) or p in ("/", "/setup"):
+        response.headers["Cache-Control"] = "no-cache"
+    return response
 
 
 def verify_api_key(x_api_key: Optional[str] = Header(None)):
@@ -63,9 +78,9 @@ def startup():
 
 def _startup_consistency_scan():
     """启动一致性治理：清理过期 .uploads/.import_tmp 临时目录 + 记录孤儿照片文件（不自动删除）。"""
-    n = _cleanup_uploads() + _cleanup_import_tmp()
+    n = _cleanup_uploads() + _cleanup_import_tmp() + _cleanup_export_tmp()
     if n:
-        logger.info("启动清理过期上传/导入临时目录 %d 个", n)
+        logger.info("启动清理过期上传/导入/导出临时文件 %d 个", n)
     referenced = set()
     for m in db.list_models():
         for p in m.get("photos") or []:
@@ -400,9 +415,9 @@ def _maybe_daily_cleanup():
     today = time.strftime("%Y-%m-%d")
     if _last_uploads_cleanup[0] != today:
         _last_uploads_cleanup[0] = today
-        n = _cleanup_uploads() + _cleanup_import_tmp()
+        n = _cleanup_uploads() + _cleanup_import_tmp() + _cleanup_export_tmp()
         if n:
-            logger.info("清理过期上传/导入临时目录 %d 个", n)
+            logger.info("清理过期上传/导入/导出临时文件 %d 个", n)
 
 
 @app.post("/api/v1/models/{model_id}/photos/chunk", dependencies=[Depends(verify_api_key)])
@@ -633,7 +648,35 @@ def get_thumb(filename: str):
 
 # 导入临时目录与照片/数据库同卷（数据卷），24h 清理；导出临时文件响应后即删。
 IMPORT_TMP_DIR = os.path.join(DATA_DIR, ".import_tmp")
-MAX_IMPORT_BYTES = 200 * 1024 * 1024  # 整包（合并后 ZIP）上限
+# 导入不设固定包大小上限（v1.3.2）：合并前按磁盘剩余空间把关。
+# 数据卷峰值 ≈ 合并包 + 解包暂存 ≈ 包大小 ×2，另留 MARGIN 给系统/缩略图。
+IMPORT_DISK_MARGIN = 500 * 1024 * 1024
+
+
+def _disk_free(path):
+    st = os.statvfs(path)
+    return st.f_bavail * st.f_frsize
+
+
+def _gb(n):
+    return f"{n / (1024 ** 3):.1f}"
+
+
+def _check_import_disk(total_bytes):
+    """合并前磁盘检查：数据卷需容纳 包×2 + 余量；照片卷（若不同盘）需容纳 包 + 余量。"""
+    free_data = _disk_free(DATA_DIR)
+    need_data = total_bytes * 2 + IMPORT_DISK_MARGIN
+    if need_data > free_data:
+        raise HTTPException(
+            status_code=400,
+            detail=f"磁盘空间不足（数据盘需 {_gb(need_data)} GB，可用 {_gb(free_data)} GB）")
+    if os.path.abspath(PHOTOS_DIR) != os.path.abspath(DATA_DIR):
+        free_photos = _disk_free(PHOTOS_DIR)
+        need_photos = total_bytes + IMPORT_DISK_MARGIN
+        if need_photos > free_photos:
+            raise HTTPException(
+                status_code=400,
+                detail=f"磁盘空间不足（照片盘需 {_gb(need_photos)} GB，可用 {_gb(free_photos)} GB）")
 
 
 def _cleanup_import_tmp(max_age=UPLOADS_TTL):
@@ -663,57 +706,228 @@ def _valid_photo_name(fn):
     return ext in ALLOWED_EXTS
 
 
-@app.get("/api/v1/export", dependencies=[Depends(verify_api_key)])
-def export_data(background_tasks: BackgroundTasks,
-                include_photos: int = Query(1, ge=0, le=1),
-                include_amap: int = Query(0, ge=0, le=1)):
-    """全量导出 ZIP（临时文件流式组装，不占大内存）。
-    include_amap=1 且已配置 amap_key → pyzipper AES 加密包 + 种子文件；
-    include_amap=1 但 amap_key 为空 → 降级明文包，响应头 X-Export-Note 说明原因。"""
+# ---------- 导出（v1.3.2：后台任务打包 + 轮询进度） ----------
+
+EXPORT_TMP_DIR = os.path.join(DATA_DIR, ".export_tmp")
+EXPORT_TTL = 30 * 60  # 打包完成后 30min 未下载自动清理
+
+_export_jobs = {}  # job_id -> 任务状态 dict（进程内；重启丢失由前端按 404 处理）
+_export_jobs_lock = threading.Lock()
+
+
+def _cleanup_export_tmp(max_age=EXPORT_TTL):
+    """删除过期导出包（未下载/崩溃遗留），并回收注册表死条目。返回删除数。"""
+    removed = 0
+    if os.path.isdir(EXPORT_TMP_DIR):
+        now = time.time()
+        for fn in os.listdir(EXPORT_TMP_DIR):
+            p = os.path.join(EXPORT_TMP_DIR, fn)
+            try:
+                if os.path.isfile(p) and now - os.path.getmtime(p) > max_age:
+                    os.remove(p)
+                    removed += 1
+            except OSError:
+                pass
+    with _export_jobs_lock:
+        for jid in [k for k, j in _export_jobs.items()
+                    if j["status"] != "packing" and not os.path.isfile(j["path"])]:
+            _export_jobs.pop(jid, None)
+    return removed
+
+
+class _CountingWriter(io.RawIOBase):
+    """包装真实文件对象：委托 write/seek/tell 供 zipfile 使用，同时累计写入字节以报告进度。"""
+
+    def __init__(self, f):
+        self._f = f
+        self.n = 0
+
+    def writable(self):
+        return True
+
+    def seekable(self):
+        return True
+
+    def write(self, b):
+        n = self._f.write(b)
+        self.n += n
+        return n
+
+    def seek(self, *a):
+        return self._f.seek(*a)
+
+    def tell(self):
+        return self._f.tell()
+
+    def flush(self):
+        self._f.flush()
+
+
+def _export_inputs(include_photos):
+    """待打包照片列表 [(文件名, 路径, 字节数)]。"""
+    files = []
+    if include_photos:
+        for fn in sorted(os.listdir(PHOTOS_DIR)):
+            if not _valid_photo_name(fn):
+                continue
+            src = os.path.join(PHOTOS_DIR, fn)
+            if os.path.isfile(src):
+                files.append((fn, src, os.path.getsize(src)))
+    return files
+
+
+def _build_export_zip(tmp_path, include_photos, include_amap, on_progress=None):
+    """打包核心（同步端点与后台任务共用）。返回 (下载文件名, 加密降级提示或 None, json 字节数)。
+    JPEG 原图已压缩，deflate 后输出≈输入，进度按已写字节 / 输入总字节估算，封顶 99% 直到完成。"""
     cfg = db.get_config()
     amap_empty = not (cfg.get("amap_key") or "").strip()
     encrypt = bool(include_amap) and not amap_empty
+    note = "未配置 amap_key，已导出未加密包（不含 Key）" if (include_amap and amap_empty) else None
     payload = db.export_payload(app.version, include_amap=encrypt)
     ts = time.strftime("%Y%m%d_%H%M%S")
     seed_name = None
     if encrypt:
         seed_name = time.strftime("%Y%m%d%H%M%S") + ".seed"
         payload["seed"] = seed_name
-
-    tmp_dir = os.path.join(DATA_DIR, ".export_tmp")
-    os.makedirs(tmp_dir, exist_ok=True)
-    tmp_path = os.path.join(tmp_dir, f"hangar-export-{ts}.zip")
-    try:
+    json_bytes = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    photos = _export_inputs(include_photos)
+    total = sum(sz for _, _, sz in photos) + len(json_bytes) or 1
+    with open(tmp_path, "wb") as raw:
+        cw = _CountingWriter(raw)
         if encrypt:
-            zf = pyzipper.AESZipFile(tmp_path, "w", encryption=pyzipper.WZ_AES)
+            zf = pyzipper.AESZipFile(cw, "w", encryption=pyzipper.WZ_AES)
             zf.setpassword(db.generate_password_v2(seed_name).encode())
         else:
-            zf = zipfile.ZipFile(tmp_path, "w", zipfile.ZIP_DEFLATED, allowZip64=True)
+            zf = zipfile.ZipFile(cw, "w", zipfile.ZIP_DEFLATED, allowZip64=True)
         with zf:
             if seed_name:
                 zf.writestr(seed_name, b"")
-            zf.writestr("hangar-export.json",
-                        json.dumps(payload, ensure_ascii=False).encode("utf-8"))
-            if include_photos:
-                for fn in sorted(os.listdir(PHOTOS_DIR)):
-                    if not _valid_photo_name(fn):
-                        continue
-                    src = os.path.join(PHOTOS_DIR, fn)
-                    if os.path.isfile(src):
-                        zf.write(src, f"photos/{fn}")
-    except Exception as e:
-        try:
-            os.remove(tmp_path)
-        except OSError:
-            pass
-        raise HTTPException(status_code=500, detail=f"导出失败: {e}")
+            zf.writestr("hangar-export.json", json_bytes)
+            for fn, src, _sz in photos:
+                zf.write(src, f"photos/{fn}")
+                if on_progress:
+                    on_progress(min(cw.n, total), total)
+    return f"hangar-export-{ts}.zip", note, len(json_bytes)
 
-    headers = {"Content-Disposition": f'attachment; filename="hangar-export-{ts}.zip"'}
-    if include_amap and amap_empty:
+
+@app.get("/api/v1/export", dependencies=[Depends(verify_api_key)])
+def export_data(background_tasks: BackgroundTasks,
+                include_photos: int = Query(1, ge=0, le=1),
+                include_amap: int = Query(0, ge=0, le=1)):
+    """同步导出 ZIP（保留给 smoke test / 脚本；WebUI 走 /export/jobs 任务流）。"""
+    os.makedirs(EXPORT_TMP_DIR, exist_ok=True)
+    tmp_path = os.path.join(EXPORT_TMP_DIR, f"hangar-export-{uuid.uuid4().hex}.zip")
+    try:
+        fname, note, _ = _build_export_zip(tmp_path, include_photos, include_amap)
+    except Exception as e:
+        _remove_quiet(tmp_path)
+        raise HTTPException(status_code=500, detail=f"导出失败: {e}")
+    headers = {"Content-Disposition": f'attachment; filename="{fname}"'}
+    if note:
         # HTTP 头只允许 latin-1，中文提示按 RFC 5987 百分号编码，前端 decodeURIComponent 还原
-        headers["X-Export-Note"] = quote("未配置 amap_key，已导出未加密包（不含 Key）")
+        headers["X-Export-Note"] = quote(note)
     background_tasks.add_task(_remove_quiet, tmp_path)
     return FileResponse(tmp_path, media_type="application/zip", headers=headers)
+
+
+@app.get("/api/v1/export/preview", dependencies=[Depends(verify_api_key)])
+def export_preview():
+    """导出前预估：照片数/字节 + JSON 字节（scandir 级，不打包）。"""
+    photos = _export_inputs(1)
+    payload = db.export_payload(app.version, include_amap=False)
+    json_bytes = len(json.dumps(payload, ensure_ascii=False).encode("utf-8"))
+    photo_bytes = sum(sz for _, _, sz in photos)
+    return {"photo_count": len(photos), "photo_bytes": photo_bytes,
+            "json_bytes": json_bytes, "total_bytes": photo_bytes + json_bytes}
+
+
+class ExportJobBody(BaseModel):
+    include_photos: int = 1
+    include_amap: int = 0
+
+
+_JOB_PUBLIC_KEYS = ("status", "progress", "bytes_done", "bytes_total",
+                    "photo_count", "json_bytes", "filename", "note", "error")
+
+
+@app.post("/api/v1/export/jobs", dependencies=[Depends(verify_api_key)])
+def create_export_job(body: ExportJobBody):
+    """创建后台打包任务（同一时刻最多 1 个；409 时 detail 带进行中的 job_id 供前端续轮询）。"""
+    _cleanup_export_tmp()  # 机会性 TTL 清理：每日兜底最长要 24h 才生效，这里顺带回收过期包
+    with _export_jobs_lock:
+        for jid, j in _export_jobs.items():
+            if j["status"] == "packing":
+                raise HTTPException(status_code=409,
+                                    detail={"error": "已有导出任务进行中", "job_id": jid})
+        job_id = uuid.uuid4().hex
+        photos = _export_inputs(body.include_photos)
+        j = {"status": "packing", "progress": 0,
+             "bytes_done": 0, "bytes_total": sum(sz for _, _, sz in photos),
+             "photo_count": len(photos), "json_bytes": 0,
+             "filename": None, "note": None, "error": None,
+             "path": os.path.join(EXPORT_TMP_DIR, job_id + ".zip"),
+             "include_photos": body.include_photos, "include_amap": body.include_amap}
+        _export_jobs[job_id] = j
+    os.makedirs(EXPORT_TMP_DIR, exist_ok=True)
+
+    def worker():
+        def on_prog(done, tot):
+            with _export_jobs_lock:
+                j["bytes_done"] = done
+                j["bytes_total"] = tot
+                j["progress"] = min(99, int(done * 100 / (tot or 1)))
+        try:
+            fname, note, json_len = _build_export_zip(
+                j["path"], j["include_photos"], j["include_amap"], on_prog)
+            size = os.path.getsize(j["path"])
+            with _export_jobs_lock:
+                j.update(status="ready", progress=100, filename=fname, note=note,
+                         json_bytes=json_len, bytes_done=size, bytes_total=size)
+        except Exception as e:
+            _remove_quiet(j["path"])
+            with _export_jobs_lock:
+                j.update(status="error", error=str(e))
+
+    threading.Thread(target=worker, daemon=True).start()
+    return {"job_id": job_id}
+
+
+@app.get("/api/v1/export/jobs/{job_id}", dependencies=[Depends(verify_api_key)])
+def export_job_status(job_id: str):
+    _safe_upload_id(job_id)
+    with _export_jobs_lock:
+        j = _export_jobs.get(job_id)
+        if not j:
+            raise HTTPException(status_code=404, detail="任务不存在或已失效（服务可能已重启）")
+        return {k: j[k] for k in _JOB_PUBLIC_KEYS}
+
+
+@app.get("/api/v1/export/jobs/{job_id}/download", dependencies=[Depends(verify_api_key)])
+def export_job_download(job_id: str):
+    _safe_upload_id(job_id)
+    with _export_jobs_lock:
+        j = _export_jobs.get(job_id)
+        if not j:
+            raise HTTPException(status_code=404, detail="任务不存在或已失效（服务可能已重启）")
+        if j["status"] != "ready":
+            raise HTTPException(status_code=409, detail="打包尚未完成")
+        path, fname, note = j["path"], j["filename"], j["note"]
+    if not os.path.isfile(path):
+        raise HTTPException(status_code=404, detail="导出包已被清理，请重新导出")
+    headers = {"Content-Disposition": f'attachment; filename="{fname}"'}
+    if note:
+        headers["X-Export-Note"] = quote(note)
+    return FileResponse(path, media_type="application/zip", headers=headers)
+
+
+@app.delete("/api/v1/export/jobs/{job_id}", dependencies=[Depends(verify_api_key)])
+def export_job_delete(job_id: str):
+    _safe_upload_id(job_id)
+    with _export_jobs_lock:
+        j = _export_jobs.pop(job_id, None)
+    if j:
+        _remove_quiet(j["path"])
+    return {"ok": True}
 
 
 def _remove_quiet(path):
@@ -785,9 +999,7 @@ def import_complete(body: ImportCompleteBody):
                             detail={"error": "缺块", "total": total, "missing": missing,
                                     "received": [i for i in range(total) if i not in missing]})
     sizes = [os.path.getsize(p) for p in parts]
-    if sum(sizes) > MAX_IMPORT_BYTES:
-        shutil.rmtree(d, ignore_errors=True)
-        raise HTTPException(status_code=413, detail="导入包超过 200MB 上限")
+    _check_import_disk(sum(sizes))
     zip_path = os.path.join(IMPORT_TMP_DIR, body.upload_id + ".zip")
     tmp = zip_path + ".merging.tmp"
     try:
@@ -828,10 +1040,6 @@ def run_import(body: ImportBody):
                 seeds = [n for n in names if n.lower().endswith(".seed")]
                 if seeds:
                     zf.setpassword(db.generate_password_v2(os.path.basename(seeds[0])).encode())
-                photo_bytes = sum(i.file_size for i in zf.infolist()
-                                  if i.filename.startswith("photos/") and not i.is_dir())
-                if photo_bytes > MAX_IMPORT_BYTES:
-                    raise HTTPException(status_code=413, detail="包内照片超过 200MB 上限")
                 try:
                     raw = zf.read("hangar-export.json")
                 except (RuntimeError, zipfile.BadZipFile, ValueError) as e:

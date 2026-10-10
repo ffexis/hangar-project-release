@@ -132,7 +132,7 @@ async function uploadPhotos(files) {
 }
 
 // 原始请求（分块循环需要拿到 400 的 detail 对象做续传，不能走 api() 的 toast 路径）
-async function rawReq(path, opts) {
+async function rawReq(path, opts = {}) {
   const headers = Object.assign({}, opts.headers || {});
   const key = apiKey();
   if (key) headers["X-API-Key"] = key;

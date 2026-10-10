@@ -138,6 +138,9 @@ export function initTheme() {
   const menu = $("#theme-menu");
   $("#theme-trigger").onclick = (e) => {
     e.stopPropagation();
+    // 与导入/导出菜单互斥：trigger 的 click 已 stopPropagation，需手动收起另一个菜单
+    const ioMenu = $("#io-menu");
+    if (ioMenu) ioMenu.classList.add("hidden");
     menu.classList.toggle("hidden");
   };
   menu.addEventListener("click", (e) => {

@@ -3,6 +3,49 @@
 All notable changes to this project are documented here.
 This project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.3.2]
+
+### Fixed
+
+- **Large-archive import**: the fixed 200 MB cap (both the merged-zip check
+  and the inner-photos check) is replaced by a pre-merge disk-space check —
+  the data volume must fit `2 × package + 500 MB` margin (merged zip + photo
+  staging peak), and the photos volume is checked separately when it lives
+  on a different disk.
+
+### Added
+
+- **Export as a background job with progress**: `POST /export/jobs` packs the
+  ZIP in a worker thread (one job at a time; 409 returns the running job id
+  so a second client keeps polling it), `GET /export/jobs/{id}` reports byte
+  progress via a counting file wrapper, `GET /export/jobs/{id}/download`
+  serves the finished package with an exact `Content-Length`, and `DELETE`
+  cleans up (30-min TTL sweep as backstop). The export dialog now shows an
+  estimated package size (`GET /export/preview`) with a >2 GB warning, a
+  progress bar while packing, and auto-download on completion. The legacy
+  synchronous `GET /export` remains for scripts/smoke tests.
+- **HDR badge in lightbox**: `read_exif` now returns `hdr` (detects the
+  `GainMap` XMP marker in the first 64 KB — Ultra HDR / gain-map JPEGs);
+  the lightbox shows a gold "HDR" badge with an explanatory tooltip so
+  users know a dark-looking image is an HDR original, not a bug.
+
+## [1.3.1]
+
+### Fixed
+
+- **Backup/restore dialogs**: checkbox/radio rows no longer stack vertically
+  and center (the global `label { flex-direction: column }` rule leaked into
+  `.dlg-check`/`.dlg-radio`); controls now sit inline, left-aligned.
+- **Dialog buttons**: all dialog actions are right-aligned at the bottom with
+  the confirm/primary button farthest right (export, import mode, login).
+- **Scrollbar shift**: opening any modal no longer nudges the page sideways —
+  `scrollbar-gutter: stable` keeps the gutter reserved.
+- **Header menus**: the import/export and theme dropdowns are now mutually
+  exclusive (opening one closes the other).
+- **Photo overlay buttons**: delete/up/down icons now fill their circular
+  badges (the icons' built-in circles match the badge size), use a softer
+  white tint, and the delete badge matches the move buttons' size.
+
 ## [1.3.0]
 
 ### Added

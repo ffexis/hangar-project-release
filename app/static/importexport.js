@@ -10,7 +10,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // 原始请求：导入流程需要拿到 400 的 detail 对象（缺块续传 / 校验错误列表），
 // 不能走 api() 的统一 toast 路径。
-async function rawReq(path, opts) {
+async function rawReq(path, opts = {}) {
   const headers = Object.assign({}, opts.headers || {});
   const key = apiKey();
   if (key) headers["X-API-Key"] = key;
@@ -27,39 +27,104 @@ function detailText(d, fallback) {
   return fallback;
 }
 
-// ---------- 导出 ----------
+// ---------- 导出（v1.3.2：预估 + 后台任务打包 + 轮询进度） ----------
 
-async function doExport(includePhotos, includeAmap, statusEl) {
-  statusEl.textContent = "正在打包，请稍候…";
+const GB = 1024 ** 3;
+const fmtSize = (n) =>
+  n >= GB ? (n / GB).toFixed(2) + " GB"
+  : n >= 1048576 ? (n / 1048576).toFixed(1) + " MB"
+  : Math.max(1, Math.round(n / 1024)) + " KB";
+
+// 弹窗保持打开直到下载完成（validate 恒返回 false）；失败时恢复可重试。
+async function startExportJob(mask, promise, photos, amap) {
+  const st = mask.querySelector("#dlg-export-status");
+  const prog = mask.querySelector(".dlg-progress");
+  const bar = mask.querySelector(".dlg-progress-bar");
+  prog.classList.remove("hidden");
+  // 进行中锁定：点外部/Esc/导出按钮均无效，只能取消（旧版 dialog.js 无此方法时跳过）
+  if (typeof promise.setLocked === "function") promise.setLocked(true);
+  const fail = (msg) => {
+    st.innerHTML = `<span class="dlg-warn">${esc(msg)}</span>`;
+    mask._exporting = false;
+    if (typeof promise.setLocked === "function") promise.setLocked(false);
+  };
+  st.textContent = "创建导出任务…";
+  const r = await rawReq("/api/v1/export/jobs", {
+    method: "POST",
+    body: JSON.stringify({ include_photos: photos ? 1 : 0, include_amap: amap ? 1 : 0 }),
+  });
+  if (r.status === 401) { fail("需要登录（API Key 无效）"); openLoginModal(); return; }
+  let jobId = null;
+  if (r.status === 200) jobId = r.json && r.json.job_id;
+  else if (r.status === 409) {
+    // 已有任务在打包（如另一页签发起）：直接续轮询该任务
+    jobId = r.json && r.json.detail && r.json.detail.job_id;
+  }
+  if (!jobId) { fail("创建任务失败，请重试"); return; }
+  st.textContent = "任务已创建，等待打包…";
+
+  let netFails = 0;
+  for (;;) {
+    await sleep(1000);
+    if (promise.closed) return; // 用户已关窗，任务交由服务端 TTL 清理
+    let s;
+    try {
+      s = await rawReq(`/api/v1/export/jobs/${jobId}`);
+    } catch (e) {
+      // 慢链路偶发网络错误：容忍连续 4 次，避免轮询静默死亡导致 UI 卡死
+      if (++netFails >= 5) { fail("网络中断，进度查询失败。包可能仍在后台打包，稍后可重新导出"); return; }
+      continue;
+    }
+    netFails = 0;
+    if (s.status === 404) { fail("任务已失效（服务可能已重启），请重新导出"); return; }
+    const j = s.json || {};
+    if (j.status === "error") { fail("打包失败：" + (j.error || "未知错误")); return; }
+    if (j.status === "ready") break;
+    bar.style.width = (j.progress || 0) + "%";
+    st.textContent = `打包中 ${j.progress || 0}%（${fmtSize(j.bytes_done || 0)}/${fmtSize(j.bytes_total || 0)}）`;
+  }
+
+  // 下载：流式读取并显示字节进度（大包经慢链路要几分钟，不能只写"开始下载"）
   let res;
   try {
-    res = await fetch(
-      `/api/v1/export?include_photos=${includePhotos ? 1 : 0}&include_amap=${includeAmap ? 1 : 0}`,
+    res = await fetch(`/api/v1/export/jobs/${jobId}/download`,
       { headers: { "X-API-Key": apiKey() } });
-  } catch (e) {
-    statusEl.textContent = "";
-    toast("导出请求失败：" + e.message, true);
-    return false;
-  }
-  if (res.status === 401) {
-    statusEl.textContent = "";
-    toast("需要登录（API Key 无效）", true);
-    openLoginModal();
-    return false;
-  }
-  if (!res.ok) {
-    let msg = res.statusText;
-    try { msg = detailText((await res.json()).detail, msg); } catch (e) { /* ignore */ }
-    statusEl.textContent = "";
-    toast("导出失败：" + msg, true);
-    return false;
+  } catch (e) { /* 按失败处理 */ }
+  if (!res || !res.ok) {
+    fail("下载失败" + (res ? `（${res.status}）` : "") + "，包已就绪，可重新导出");
+    return;
   }
   const note = res.headers.get("X-Export-Note");
+  const total = Number(res.headers.get("Content-Length")) || 0;
+  const dl = async () => {
+    // 有 body 流则边读边更新进度；不支持则退回一次性 blob
+    if (!res.body || !res.body.getReader) return res.blob();
+    const reader = res.body.getReader();
+    const chunks = [];
+    let got = 0;
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      chunks.push(value);
+      got += value.length;
+      if (total) {
+        const pct = Math.min(99, Math.round((got / total) * 100));
+        bar.style.width = pct + "%";
+        st.textContent = `下载中 ${pct}%（${fmtSize(got)}/${fmtSize(total)}）`;
+      } else {
+        st.textContent = `下载中 ${fmtSize(got)}…`;
+      }
+      if (promise.closed) return null; // 用户中途取消
+    }
+    return new Blob(chunks, { type: "application/zip" });
+  };
+  const blob = await dl();
+  if (!blob) return; // 下载途中关窗
+  bar.style.width = "100%";
   if (note) {
     try { toast(decodeURIComponent(note), true); }
     catch (e) { toast(note, true); }
   }
-  const blob = await res.blob();
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
@@ -67,41 +132,57 @@ async function doExport(includePhotos, includeAmap, statusEl) {
   a.download = m ? m[1] : "hangar-export.zip";
   a.click();
   URL.revokeObjectURL(url);
-  statusEl.textContent = "";
-  toast("导出完成：" + a.download);
-  return true;
+  rawReq(`/api/v1/export/jobs/${jobId}`, { method: "DELETE" }); // 服务端清理临时包
+  st.textContent = "导出完成：" + a.download;
+  if (typeof promise.setLocked === "function") promise.setLocked(false);
+  setTimeout(() => promise.dismiss(), 1500);
 }
 
-function openExportDialog() {
+async function openExportDialog() {
+  let pv;
+  try { pv = await api("/api/v1/export/preview"); }
+  catch (e) { return; } // api() 已 toast（含 401 登录引导）
   const promise = openDialog({
     title: "导出数据",
     body:
-      `<p class="muted">导出当前全部机体档案（ZIP 包）。</p>` +
+      `<p class="muted" id="dlg-export-est"></p>` +
       `<label class="dlg-check"><input type="checkbox" id="dlg-photos" checked> 包含照片（原图，包体较大）</label>` +
       `<label class="dlg-check"><input type="checkbox" id="dlg-amap"> 包含高德 Key（导出包将加密）</label>` +
+      `<div class="dlg-progress hidden"><div class="dlg-progress-bar"></div></div>` +
       `<p class="dlg-status muted" id="dlg-export-status"></p>`,
     actions: [
       { label: "取消", value: "cancel" },
       { label: "导出", value: "export", primary: true },
     ],
-    validate: (mask) => {
-      const st = mask.querySelector("#dlg-export-status");
-      if (st.textContent) return false; // 打包中，禁止重复提交
-      st.textContent = "…";
-      return true;
+    onOpen: (mask) => {
+      const est = mask.querySelector("#dlg-export-est");
+      const sync = () => {
+        const withPhotos = mask.querySelector("#dlg-photos").checked;
+        const total = withPhotos ? pv.total_bytes : pv.json_bytes;
+        let t = withPhotos
+          ? `导出包约 ${fmtSize(total)}（含 ${pv.photo_count} 张原图）`
+          : `导出包约 ${fmtSize(total)}（仅档案 JSON，不含照片）`;
+        if (total > 2 * GB) t += " · 包较大，导出期间请保持页面打开";
+        est.textContent = t;
+      };
+      mask.querySelector("#dlg-photos").onchange = sync;
+      sync();
     },
-  });
-  promise.then(async (v) => {
-    if (v !== "export") return;
-    const mask = promise.root;
-    const st = mask.querySelector("#dlg-export-status");
-    const photos = mask.querySelector("#dlg-photos").checked;
-    const amap = mask.querySelector("#dlg-amap").checked;
-    const ok = await doExport(photos, amap, st);
-    if (!ok) {
-      st.textContent = "失败，可重试";
-      setTimeout(() => { st.textContent = ""; }, 1500);
-    }
+    validate: (mask) => {
+      if (mask._exporting) return false; // 进行中，禁止重复提交
+      mask._exporting = true;
+      // fire-and-forget 的 async 调用：必须兜住异常，否则静默死亡无从排查
+      startExportJob(mask, promise,
+        mask.querySelector("#dlg-photos").checked,
+        mask.querySelector("#dlg-amap").checked).catch((e) => {
+        console.error("[export]", e);
+        const st = mask.querySelector("#dlg-export-status");
+        st.innerHTML = `<span class="dlg-warn">导出流程异常：${esc(String((e && e.message) || e))}</span>`;
+        mask._exporting = false;
+        if (typeof promise.setLocked === "function") promise.setLocked(false);
+      });
+      return false; // 保持弹窗展示进度，下载完成后自动关闭
+    },
   });
 }
 
@@ -311,6 +392,9 @@ export function initImportExport() {
   if (!btn || !menu) return;
   btn.onclick = (e) => {
     e.stopPropagation();
+    // 与主题菜单互斥：trigger 的 click 已 stopPropagation，需手动收起另一个菜单
+    const themeMenu = $("#theme-menu");
+    if (themeMenu) themeMenu.classList.add("hidden");
     menu.classList.toggle("hidden");
   };
   menu.addEventListener("click", (e) => {

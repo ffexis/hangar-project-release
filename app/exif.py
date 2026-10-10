@@ -94,10 +94,21 @@ def wgs84_to_gcj02(lat, lng):
     return lat + dlat, lng + dlng
 
 
+def _is_hdr(path):
+    """Ultra HDR 检测：JPEG 头部 XMP 段含 'GainMap'（DirectoryItemSemantic: Primary, GainMap）。
+    读头 64KB 原始字节即可（XMP 在文件头，且不在 PIL 标准 EXIF 里）；异常一律 False。"""
+    try:
+        with open(path, "rb") as f:
+            return b"GainMap" in f.read(65536)
+    except OSError:
+        return False
+
+
 def read_exif(path):
     """读取照片元数据；无 EXIF / 损坏的字段返回 None，绝不抛异常。"""
     meta = {"taken_at": None, "device": None, "exposure": None,
-            "aperture": None, "iso": None, "focal": None, "gps": None, "map": None}
+            "aperture": None, "iso": None, "focal": None, "gps": None, "map": None,
+            "hdr": _is_hdr(path)}
     try:
         with Image.open(path) as im:
             ex = im.getexif()
