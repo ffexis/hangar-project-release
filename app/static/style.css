@@ -29,8 +29,8 @@
 }
 
 * { box-sizing: border-box; }
-/* 预留滚动条槽位：弹窗打开时 body overflow:hidden 不会导致页面横向偏移 */
-html { scrollbar-gutter: stable; }
+/* 不再预留滚动条槽位：桌面列表页整页不滚动（表格区内部滚动），
+   预留槽位会让 header 右侧露出一条底色缺口 */
 
 body {
   margin: 0;
@@ -125,26 +125,97 @@ header h1 { font-size: 18px; margin: 0; letter-spacing: 1px; }
 
 main { padding: 18px 20px; max-width: 1400px; margin: 0 auto; }
 
-.toolbar {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  margin-bottom: 14px;
-  align-items: center;
-}
+/* ---------- header 下拉：筛选 / 搜索 ---------- */
 
-.toolbar select, .toolbar input[type="search"] {
-  padding: 6px 10px;
+.filter-menu, .search-menu { padding: 8px; }
+.filter-menu { min-width: 190px; gap: 6px; }
+.filter-menu select {
+  width: 100%;
+  padding: 7px 10px;
   background: var(--panel2);
   border: 1px solid var(--line);
   border-radius: 6px;
   color: var(--text);
 }
-.toolbar input[type="search"] { flex: 1; min-width: 140px; }
+.search-menu { min-width: 230px; }
+.search-menu input[type="search"] {
+  width: 100%;
+  padding: 7px 10px;
+  background: var(--panel2);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  color: var(--text);
+  font-size: 14px;
+}
 
-/* 桌面：筛选组直接参与 flex；移动端改为抽屉 */
-.filters { display: contents; }
-.filter-toggle, .filter-count { display: none; }
+/* 筛选激活数徽标：挂在 header 筛选图标右上角 */
+#btn-filter { position: relative; }
+.filter-count {
+  position: absolute;
+  top: -6px;
+  right: -6px;
+  min-width: 16px;
+  height: 16px;
+  line-height: 16px;
+  padding: 0 4px;
+  border-radius: 8px;
+  background: var(--accent2);
+  color: #fff;
+  font-size: 11px;
+  text-align: center;
+}
+.filter-count.hidden { display: none; }
+
+/* 只读模式 chip：与"已登录"共享位置，可点击登录 */
+.auth-chip.readonly {
+  background: var(--panel2);
+  color: var(--muted);
+  border: none;
+  cursor: pointer;
+  font-size: 12px;
+  padding: 3px 10px;
+  border-radius: 10px;
+  font-family: inherit;
+}
+.auth-chip.readonly:hover { color: var(--text); }
+
+/* 操作列图标按钮（编辑/删除） */
+.op-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  background: transparent;
+  border: none;
+  border-radius: 6px;
+  color: var(--muted);
+  cursor: pointer;
+}
+.op-icon:hover { background: var(--panel); color: var(--text); }
+.op-icon svg { width: 18px; height: 18px; }
+
+/* 新增：右下角悬浮圆形按钮（下 1/3 压在固定 footer 上：footer 高 28px，52×2/3≈35px → bottom 11px） */
+.fab {
+  position: fixed;
+  right: 28px;
+  bottom: 11px;
+  width: 52px;
+  height: 52px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 50%;
+  background: var(--accent2);
+  color: #fff;
+  cursor: pointer;
+  box-shadow: 0 4px 14px var(--shadow);
+  z-index: 40;
+}
+.fab:hover { background: var(--accent); }
+.fab svg { width: 26px; height: 26px; }
 
 .row-thumb {
   width: 40px;
@@ -166,6 +237,43 @@ main { padding: 18px 20px; max-width: 1400px; margin: 0 auto; }
 .btn.primary { background: var(--accent2); border-color: var(--accent); color: #fff; }
 .btn.primary:hover { background: var(--accent); }
 .btn:disabled { opacity: .45; cursor: default; pointer-events: none; }
+
+/* ---- 表单保存/上传进行中：按钮转圈 + 内嵌进度面板 ---- */
+.btn.busy:disabled { opacity: 1; }
+.spinner {
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  margin-right: 8px;
+  vertical-align: -2px;
+  border: 2px solid rgba(255, 255, 255, .4);
+  border-top-color: #fff;
+  border-radius: 50%;
+  animation: spin .8s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+.fu-panel { margin-top: 14px; }
+.fu-bar {
+  height: 6px;
+  border-radius: 3px;
+  background: var(--line);
+  overflow: hidden;
+}
+.fu-fill {
+  height: 100%;
+  width: 0;
+  background: var(--accent);
+  border-radius: 3px;
+  transition: width .3s ease;
+}
+.fu-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 8px;
+  font-size: 13px;
+}
 .btn-sm {
   padding: 5px 12px;
   border-radius: 6px;
@@ -176,17 +284,52 @@ main { padding: 18px 20px; max-width: 1400px; margin: 0 auto; }
 }
 .btn-sm:hover { border-color: var(--accent); }
 
-button.link {
-  background: none;
-  border: none;
-  color: var(--accent);
-  cursor: pointer;
-  padding: 2px 6px;
-  font-size: 13px;
+/* 桌面：表格区自身纵向滚动，thead sticky 相对容器生效（表头常驻）；
+   高度 = 视口 - header(59) - main 上下内边距(18+44) - 底部余量 */
+.table-wrap {
+  overflow: auto; border: 1px solid var(--line); border-radius: 8px; max-height: calc(100vh - 130px);
 }
-button.link:hover { text-decoration: underline; }
+/* 原生纵向滚动条隐藏（width:0），改用 .vscroll 覆盖层（见 list.js）：
+   行程可控（不侵入表头）、圆角不破坏、深色模式跟随主题。
+   横向滚动条保留原生样式。注意不能用 scrollbar-color/scrollbar-width，
+   Chrome 121+ 下会整体忽略 webkit 伪元素样式 */
+.table-wrap::-webkit-scrollbar { width: 0; height: 10px; }
+.table-wrap::-webkit-scrollbar-track:horizontal { background: var(--panel); }
+.table-wrap::-webkit-scrollbar-thumb {
+  background: var(--line);
+  border-radius: 6px;
+  border: 2px solid var(--panel);
+}
+.table-wrap::-webkit-scrollbar-thumb:hover { background: var(--muted); }
 
-.table-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 8px; }
+/* 自定义纵向滚动条覆盖层：贴在表格容器右缘，滑块避开表头区域 */
+.list-outer { position: relative; }
+.vscroll {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 10px;
+  display: none;
+  z-index: 2;
+  pointer-events: none; /* 轨道不挡表格点击，仅滑块可交互 */
+}
+.vscroll.active { display: block; }
+.vscroll-thumb {
+  position: absolute;
+  left: 2px;
+  right: 2px;
+  min-height: 30px;
+  border-radius: 4px;
+  background: var(--line);
+  pointer-events: auto;
+  cursor: grab;
+}
+.vscroll-thumb:hover { background: var(--muted); }
+.vscroll-thumb.dragging { background: var(--muted); cursor: grabbing; }
+@supports (height: 100dvh) {
+  .table-wrap { max-height: calc(100dvh - 130px); }
+}
 
 table {
   width: 100%;
@@ -239,6 +382,34 @@ td.ops { white-space: nowrap; }
   object-fit: contain;
 }
 .dv .grade-logo { height: 32px; max-width: 140px; }
+/* 深色主题：黑色字体 logo 垫浅色圆角底板（品牌色不损失，对比度足够） */
+:root[data-theme="dark"] .grade-logo-plate {
+  background: #eef1f8;
+  border-radius: 5px;
+  padding: 1px 5px;
+}
+/* KO（第三方开模）：级别 logo 转灰度，区别于官方彩色 */
+.grade-logo.grade-ko {
+  filter: grayscale(1);
+  opacity: .75;
+}
+/* 名称单元格：文本与 KO 徽章绑定为一组（小屏卡片 flex 行内避免被 space-between 拆散） */
+.name-cell {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  min-width: 0;
+}
+/* 名称后的 KO 徽章 */
+.ko-badge {
+  height: 18px;
+  width: 18px;
+  vertical-align: -3px;
+  margin-left: 6px;
+  object-fit: contain;
+  flex-shrink: 0;
+}
 
 /* ---------- 标签徽章 ---------- */
 .tag {
@@ -379,8 +550,9 @@ input:disabled { opacity: .5; }
 textarea { resize: vertical; }
 
 .form-actions { margin-top: 18px; display: flex; gap: 10px; }
-/* 大屏：按钮靠右，保存在最右，返回在其左 */
-#view-form .form-actions { justify-content: flex-end; flex-direction: row-reverse; }
+/* 大屏：按钮靠右，保存在最右，返回在其左。
+   注意 row-reverse 下主轴起点在右侧，靠右必须用 flex-start（flex-end 会把按钮推到左边） */
+#view-form .form-actions { justify-content: flex-start; flex-direction: row-reverse; }
 
 /* ---------- 详情 ---------- */
 
@@ -472,6 +644,40 @@ textarea { resize: vertical; }
 .photo-move button svg { width: 111.6%; height: 111.6%; display: block; flex-shrink: 0; }
 .photo-move button:hover:not(:disabled) { background: var(--accent); }
 .photo-move button:disabled { opacity: .3; cursor: default; }
+
+/* ---- 照片拖拽排序 ---- */
+/* 可排序时缩略图显示 grab 光标提示 */
+.photos.drag-sortable img { cursor: grab; }
+/* 长按拖拽需要屏蔽系统菜单/选择浮层（iOS callout、文本选中） */
+.photos.drag-sortable,
+.photos.drag-sortable img { -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; }
+/* 拖拽中：整格禁止文本选中/触摸滚动，源格作为半透明占位 */
+.photos.dragging { user-select: none; -webkit-user-select: none; touch-action: none; }
+.photos.dragging img { cursor: grabbing; }
+.photo-cell.drag-src { opacity: .35; }
+/* 浮层 ghost：固定定位跟随指针，脱离文档流 */
+.drag-ghost {
+  position: fixed;
+  left: 0;
+  top: 0;
+  z-index: 1000;
+  margin: 0;
+  pointer-events: none;
+  opacity: .92;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, .28);
+  border-radius: 8px;
+  will-change: transform;
+}
+/* ghost 脱离 .photos 作用域，需自带方形裁剪样式，避免按原图比例渲染 */
+.drag-ghost img {
+  width: 100%;
+  height: 100%;
+  aspect-ratio: 1;
+  object-fit: cover;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  display: block;
+}
 
 /* ---------- Lightbox ---------- */
 
@@ -627,8 +833,9 @@ body.modal-open { overflow: hidden; }
 .modal input { width: 100%; margin-top: 10px; }
 
 .login-error { color: var(--err); font-size: 13px; margin: 8px 0 0; }
-/* 登录框按钮靠右下，确认（登录）在最右；HTML 顺序保持不变以兼容移动端 column-reverse */
-#modal-mask .form-actions { justify-content: flex-end; flex-direction: row-reverse; }
+/* 登录框按钮靠右下，确认（登录）在最右；HTML 顺序保持不变以兼容移动端 column-reverse。
+   row-reverse 下靠右用 flex-start（见 #view-form .form-actions 同款注释） */
+#modal-mask .form-actions { justify-content: flex-start; flex-direction: row-reverse; }
 
 /* ---------- 通用对话框（dialog.js） ---------- */
 
@@ -705,38 +912,13 @@ main { padding-bottom: 44px; }
 
   main { padding: 12px 10px; }
 
-  /* ---- 工具栏：搜索+按钮一行，筛选收进抽屉 ---- */
-  .toolbar { gap: 8px; }
-  .toolbar input[type="search"] { flex: 1; min-width: 0; font-size: 16px; }
   .btn, .btn-sm { padding: 10px 16px; font-size: 14px; }
-  .filter-toggle { position: relative; }
-  .filter-count {
-    display: inline-block;
-    min-width: 18px;
-    height: 18px;
-    line-height: 18px;
-    border-radius: 9px;
-    background: var(--accent2);
-    color: #fff;
-    font-size: 11px;
-    text-align: center;
-    vertical-align: 1px;
-  }
-  .filters {
-    flex-basis: 100%;
-    display: none;
-    flex-direction: column;
-    gap: 8px;
-    order: -1;
-  }
-  .filters.open { display: flex; }
-  .filters select { font-size: 16px; padding: 10px; width: 100%; }
-  .filter-toggle { display: inline-block; }
-  .filter-count { display: inline-block; }
-  .filter-count.hidden { display: none; }
+  /* header 下拉菜单在小屏加宽，select 字号由全局 16px 规则防 iOS 聚焦缩放 */
+  .filter-menu { min-width: min(260px, calc(100vw - 24px)); }
+  .search-menu { min-width: min(240px, calc(100vw - 24px)); }
 
   /* ---- 列表：表格行 → 卡片 ---- */
-  .table-wrap { border: none; overflow-x: visible; }
+  .table-wrap { border: none; overflow: visible; max-height: none; }
   #models-table { background: transparent; }
   #models-table thead { display: none; }
   #models-table tbody { display: flex; flex-direction: column; gap: 10px; }
@@ -783,7 +965,11 @@ main { padding-bottom: 44px; }
     margin-top: 6px;
   }
   #models-table td.ops:empty { display: none; }
-  #models-table td.ops button.link { padding: 10px 14px; font-size: 15px; }
+  #models-table td.ops .op-icon { width: 36px; height: 36px; }
+  #models-table td.ops .op-icon svg { width: 22px; height: 22px; }
+
+  /* ---- 新增悬浮按钮：小屏避开底部 toast，footer 在文档流中无需避让 ---- */
+  .fab { right: 16px; bottom: 80px; width: 48px; height: 48px; }
 
   /* ---- 表单 / 详情：单列 ---- */
   #view-form { padding: 16px 14px; }
@@ -852,7 +1038,7 @@ main { padding-bottom: 44px; }
 
 /* 触屏设备：命中区与按压反馈 */
 @media (pointer: coarse) {
-  button.link { padding: 10px 12px; }
+  .op-icon { width: 34px; height: 34px; }
   .theme-trigger { width: 44px; height: 44px; }
   .theme-trigger svg { width: 24px; height: 24px; }
   .photo-del { width: 24px; height: 24px; font-size: 15px; }

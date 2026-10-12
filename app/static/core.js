@@ -2,6 +2,20 @@
 export const $ = (s) => document.querySelector(s);
 export const $$ = (s) => Array.from(document.querySelectorAll(s));
 
+// 内联 SVG 图标（boxicons 24×24，fill=currentColor 自动跟随主题色）
+export const ICON = {
+  edit: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path fill="currentColor" d="M5 21h14c1.1 0 2-.9 2-2v-7h-2v7H5V5h7V3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2" /><path fill="currentColor" d="M7 13v3c0 .55.45 1 1 1h3c.27 0 .52-.11.71-.29l9-9a.996.996 0 0 0 0-1.41l-3-3a.996.996 0 0 0-1.41 0l-9.01 8.99A1 1 0 0 0 7 13m10-7.59L18.59 7L17.5 8.09L15.91 6.5zm-8 8l5.5-5.5l1.59 1.59l-5.5 5.5H9z" /></svg>',
+  trash: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path fill="currentColor" d="M17 6V4c0-1.1-.9-2-2-2H9c-1.1 0-2 .9-2 2v2H2v2h2v12c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V8h2V6zM9 4h6v2H9zM6 20V8h12v12z" /><path fill="currentColor" d="M9 10h2v8H9zm4 0h2v8h-2z" /></svg>',
+};
+
+// header 下拉菜单互斥：同一时刻最多开一个
+const HEADER_MENUS = ["#filter-menu", "#search-menu", "#io-menu", "#theme-menu"];
+export function closeHeaderMenus(except) {
+  HEADER_MENUS.forEach((s) => {
+    if (s !== except) $(s).classList.add("hidden");
+  });
+}
+
 export const KEY_STORAGE = "hangar_api_key";
 export const THEME_STORAGE = "hangar_theme";
 export let LOGGED_IN = false;
@@ -90,28 +104,41 @@ export function tagBadges(tags) {
 
 // ---------- 级别 logo ----------
 // key = 级别名大写去符号后的规范化串；RE/100→RE100，PG 与 PG Unleashed 共用 PG logo。
-// 无对应 logo 的级别（如 MEGASIZE、用户自定义）显示文字。
+// 值含扩展名（MEGASIZE / MGEX 为 webp，其余 png）。无对应 logo 的级别（用户自定义等）显示文字。
 
 export const GRADE_LOGO_FILES = {
-  PG: "PG", PGUNLEASHED: "PG",
-  MG: "MG", MGEX: "MGEX", MGSD: "MGSD",
-  RG: "RG", HG: "HG", EG: "EG", FM: "FM",
-  RE100: "RE100", SDCS: "SDCS", SDEX: "SDEX",
+  PG: "PG.png", PGUNLEASHED: "PG.png",
+  MG: "MG.png", MGEX: "MGEX.webp", MGSD: "MGSD.png",
+  RG: "RG.png", HG: "HG.png", EG: "EG.png", FM: "FM.png",
+  RE100: "RE100.png", SDCS: "SDCS.png", SDEX: "SDEX.png",
+  MEGASIZE: "MEGA.webp",
 };
 
 export function gradeLogoUrl(grade) {
   if (!grade) return null;
   const key = String(grade).toUpperCase().replace(/[^A-Z0-9]/g, "");
   const file = GRADE_LOGO_FILES[key];
-  return file ? `/logo/${file}.png` : null;
+  return file ? `/logo/${file}` : null;
 }
 
-export function gradeCell(grade) {
+// 深色主题下黑字 logo 对比度不足，垫浅色底板（主人实测：仅 PG 与 HG 需要）
+const GRADE_LOGO_PLATE = new Set(["PG", "PGUNLEASHED", "HG"]);
+
+export function gradeCell(grade, origin) {
   if (!grade) return "";
   const url = gradeLogoUrl(grade);
-  return url
-    ? `<img class="grade-logo" src="${url}" alt="${esc(grade)}" title="${esc(grade)}" loading="lazy">`
-    : esc(grade);
+  const ko = origin === "KO";
+  if (!url) return esc(grade);
+  const key = String(grade).toUpperCase().replace(/[^A-Z0-9]/g, "");
+  const plate = GRADE_LOGO_PLATE.has(key) && !ko ? " grade-logo-plate" : "";
+  const gray = ko ? " grade-ko" : "";
+  return `<img class="grade-logo${plate}${gray}" src="${url}" alt="${esc(grade)}" title="${esc(grade)}" loading="lazy">`;
+}
+
+// 列表/详情统一用"机设番号 名称"作为展示名（番号可选，空则只显示名称）
+export function displayName(m) {
+  const d = (m.designation || "").trim();
+  return d ? `${d} ${m.name}` : m.name;
 }
 
 // ---------- 主题 ----------
@@ -138,9 +165,8 @@ export function initTheme() {
   const menu = $("#theme-menu");
   $("#theme-trigger").onclick = (e) => {
     e.stopPropagation();
-    // 与导入/导出菜单互斥：trigger 的 click 已 stopPropagation，需手动收起另一个菜单
-    const ioMenu = $("#io-menu");
-    if (ioMenu) ioMenu.classList.add("hidden");
+    // trigger 的 click 已 stopPropagation，需手动收起其他 header 菜单
+    closeHeaderMenus("#theme-menu");
     menu.classList.toggle("hidden");
   };
   menu.addEventListener("click", (e) => {
@@ -172,18 +198,20 @@ export function renderAuthState() {
     chip.textContent = "已登录";
     box.appendChild(chip);
   } else {
-    const b = document.createElement("button");
-    b.id = "btn-login";
-    b.className = "btn-sm";
-    b.textContent = "登录";
-    b.onclick = openLoginModal;
-    box.appendChild(b);
+    // 未登录：与"已登录"共享同一 chip 位置，点击打开登录框
+    const chip = document.createElement("button");
+    chip.className = "auth-chip readonly";
+    chip.type = "button";
+    chip.textContent = "只读模式（点击以登录）";
+    chip.onclick = openLoginModal;
+    box.appendChild(chip);
   }
 }
 
 export function renderReadonly() {
-  $("#btn-add").classList.toggle("hidden", !LOGGED_IN);
-  $("#readonly-hint").classList.toggle("hidden", LOGGED_IN);
+  // FAB 只在列表视图且已登录时显示（与 list.js showView 逻辑一致）
+  const onForm = !$("#view-form").classList.contains("hidden");
+  $("#btn-add").classList.toggle("hidden", !LOGGED_IN || onForm);
 }
 
 export function openLoginModal() {

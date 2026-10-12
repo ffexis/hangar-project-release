@@ -24,10 +24,38 @@
     <div class="header-left">
       <h1>Hangar</h1>
       <span id="auth-state">
-        <button id="btn-login" class="btn-sm">登录</button>
+        <button class="auth-chip readonly" type="button">只读模式（点击以登录）</button>
       </span>
     </div>
     <div class="header-right">
+      <div class="theme-picker" id="filter-picker">
+        <button id="btn-filter" class="theme-trigger" type="button" title="筛选">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path fill="currentColor" d="M20 2H4c-.55 0-1 .45-1 1v2c0 .22.07.43.2.6L9 13.33V21a1 1 0 0 0 1 1c.15 0 .31-.04.45-.11l4-2A1 1 0 0 0 15 19v-5.67l5.8-7.73c.13-.17.2-.38.2-.6V3c0-.55-.45-1-1-1m-1 2.67l-5.8 7.73c-.13.17-.2.38-.2.6v5.38l-2 1V13c0-.22-.07-.43-.2-.6L5 4.67V4h14z" /></svg>
+          <span id="filter-count" class="filter-count hidden">0</span>
+        </button>
+        <div class="theme-menu filter-menu hidden" id="filter-menu">
+          <select id="f-status"><option value="">状态：全部</option></select>
+          <select id="f-storage"><option value="">位置：全部</option></select>
+          <select id="f-grade"><option value="">级别：全部</option></select>
+          <select id="f-color"><option value="">颜色：全部</option></select>
+          <select id="f-category"><option value="">类别：全部</option></select>
+          <select id="f-owner"><option value="">归属：全部</option></select>
+          <select id="f-tag"><option value="">标签：全部</option></select>
+          <select id="f-display">
+            <option value="">展示：全部</option>
+            <option value="true">展示中</option>
+            <option value="false">未展示</option>
+          </select>
+        </div>
+      </div>
+      <div class="theme-picker" id="search-picker">
+        <button id="btn-search" class="theme-trigger" type="button" title="搜索">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path fill="currentColor" d="M18 10c0-4.41-3.59-8-8-8s-8 3.59-8 8s3.59 8 8 8c1.85 0 3.54-.63 4.9-1.69l5.1 5.1L21.41 20l-5.1-5.1A8 8 0 0 0 18 10M4 10c0-3.31 2.69-6 6-6s6 2.69 6 6s-2.69 6-6 6s-6-2.69-6-6" /></svg>
+        </button>
+        <div class="theme-menu search-menu hidden" id="search-menu">
+          <input type="search" id="f-q" placeholder="搜索名称…" autocomplete="off">
+        </div>
+      </div>
       <div class="theme-picker" id="io-picker">
         <button id="btn-io" class="theme-trigger" type="button" title="导入 / 导出">
           <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path fill="currentColor" d="M3.5 8V6.25c0-.966.784-1.75 1.75-1.75h2.879a.75.75 0 0 1 .53.22l1.53 1.53l-1.53 1.53a.75.75 0 0 1-.53.22zm1.75-5A3.25 3.25 0 0 0 2 6.25v11.5A3.25 3.25 0 0 0 5.25 21h7.275l-1.012-1.013a1.8 1.8 0 0 1-.345-.487H5.25a1.75 1.75 0 0 1-1.75-1.75V9.5h4.629a2.25 2.25 0 0 0 1.59-.659L11.562 7h7.189c.966 0 1.75.784 1.75 1.75v5.918c.176.084.342.199.487.345L22 16.025V8.75a3.25 3.25 0 0 0-3.25-3.25h-7.19L9.72 3.659A2.25 2.25 0 0 0 8.129 3zm10.53 13.78a.75.75 0 1 0-1.06-1.06l-2.5 2.5a.75.75 0 0 0 0 1.06l2.5 2.5a.75.75 0 1 0 1.06-1.06l-1.22-1.22h5.88l-1.22 1.22a.75.75 0 1 0 1.06 1.06l2.5-2.5a.75.75 0 0 0 0-1.06l-2.5-2.5a.75.75 0 1 0-1.06 1.06L20.44 18h-5.88z"/></svg>
@@ -68,37 +96,21 @@
   <main>
     <!-- 列表视图 -->
     <section id="view-list">
-      <div class="toolbar">
-        <div class="filters" id="filters">
-          <select id="f-status"><option value="">状态：全部</option></select>
-          <select id="f-storage"><option value="">位置：全部</option></select>
-          <select id="f-grade"><option value="">级别：全部</option></select>
-          <select id="f-category"><option value="">类别：全部</option></select>
-          <select id="f-owner"><option value="">归属：全部</option></select>
-          <select id="f-tag"><option value="">标签：全部</option></select>
-          <select id="f-display">
-            <option value="">展示：全部</option>
-            <option value="true">展示中</option>
-            <option value="false">未展示</option>
-          </select>
-        </div>
-        <input type="search" id="f-q" placeholder="搜索名称…">
-        <button id="btn-filter" class="btn-sm filter-toggle" type="button">筛选 <span id="filter-count" class="filter-count hidden">0</span></button>
-        <button id="btn-refresh" class="btn-sm">刷新</button>
-        <button id="btn-add" class="btn primary">+ 新增</button>
-      </div>
-      <p id="readonly-hint" class="muted hidden">当前为只读模式，登录后可新增 / 编辑 / 删除。</p>
+      <div class="list-outer">
       <div class="table-wrap">
         <table id="models-table">
           <thead>
             <tr>
               <th>照片</th><th>编号</th><th>名称</th><th>类别</th><th>级别</th><th>比例</th>
-              <th>限定</th><th>来源</th><th>状态</th><th>存放</th><th>展示</th>
+              <th>限定</th><th>状态</th><th>存放</th>
               <th>归属</th><th>完成日期</th><th>标签</th><th>操作</th>
             </tr>
           </thead>
           <tbody></tbody>
         </table>
+      </div>
+      <!-- 自定义纵向滚动条：滑块行程避开表头（原生纵向条已隐藏，见 style.css） -->
+      <div class="vscroll" id="vscroll"><div class="vscroll-thumb" id="vscroll-thumb"></div></div>
       </div>
       <p id="list-empty" class="muted hidden">暂无数据。</p>
     </section>
@@ -110,10 +122,13 @@
         <div class="grid">
           <label>编号 <input name="id" placeholder="留空自动生成（M001…）"></label>
           <label>名称 * <input name="name" required></label>
+          <label>机设编号 <input name="designation" placeholder="如 RX-78-2"></label>
           <label>类别 * <select name="category" required></select></label>
           <label>级别 <input name="grade" list="dl-grade"></label>
           <label>官方货号 <input name="item_no"></label>
           <label>比例 <input name="scale" list="dl-scale" placeholder="如 1/144"></label>
+          <label>机体颜色 <input name="main_color" list="dl-color"></label>
+          <datalist id="dl-color"></datalist>
           <label>限定类型 * <input name="limited" required list="dl-limited"></label>
           <label>来源 * <input name="origin" required list="dl-origin"></label>
           <label>状态 * <select name="status" required></select></label>
@@ -128,7 +143,7 @@
             </span>
           </label>
           <datalist id="dl-tag"></datalist>
-          <label class="full">照片（保存时上传）<input type="file" id="form-photos" accept=".jpg,.jpeg,.png,.webp,.gif" multiple></label>
+          <label class="full" id="form-photos-label">照片（保存时上传）<input type="file" id="form-photos" accept=".jpg,.jpeg,.png,.webp,.gif" multiple></label>
           <div id="form-photo-preview" class="photo-preview hidden"></div>
           <label class="full">评价 / 备注 <textarea name="comment" rows="3"></textarea></label>
         </div>
@@ -138,8 +153,15 @@
         <datalist id="dl-storage"></datalist>
         <datalist id="dl-owner"></datalist>
         <datalist id="dl-scale"></datalist>
+        <div id="form-upload-panel" class="fu-panel hidden">
+          <div class="fu-bar"><div id="fu-fill" class="fu-fill"></div></div>
+          <div class="fu-row">
+            <span id="fu-text" class="muted">准备上传…</span>
+            <button type="button" id="fu-cancel" class="btn-sm">中断</button>
+          </div>
+        </div>
         <div class="form-actions">
-          <button type="submit" class="btn primary">保存</button>
+          <button type="submit" id="btn-save" class="btn primary">保存</button>
           <button type="button" id="btn-cancel" class="btn">返回</button>
         </div>
       </form>
@@ -147,6 +169,11 @@
 
     <!-- 详情视图已改为模态框（见 #detail-modal） -->
   </main>
+
+  <!-- 新增：右下角悬浮按钮（登录后显示） -->
+  <button id="btn-add" class="fab hidden" type="button" title="新增模型">
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path fill="currentColor" d="M3 13h8v8h2v-8h8v-2h-8V3h-2v8H3z" /></svg>
+  </button>
 
   <footer id="app-footer">
     <span class="muted" id="app-version">Hangar</span>

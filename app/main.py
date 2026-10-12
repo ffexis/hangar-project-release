@@ -45,8 +45,10 @@ SAFE_NAME_RE = re.compile(r"[A-Za-z0-9_.-]+\Z")
 
 # 部分环境 mimetypes 未内置 .webmanifest，注册以确保 manifest 以正确 MIME 提供（PWA 安装要求）
 mimetypes.add_type("application/manifest+json", ".webmanifest")
+# python:3.11-slim 无系统 mime 表，.webp 会落到 text/plain；MEGASIZE logo 用 webp，显式注册
+mimetypes.add_type("image/webp", ".webp")
 
-app = FastAPI(title="Hangar Project", version="1.3.2")
+app = FastAPI(title="Hangar Project", version="1.3.5")
 
 
 @app.middleware("http")
@@ -122,10 +124,12 @@ async def setup_guard(request: Request, call_next):
 class ModelCreate(BaseModel):
     id: Optional[str] = None
     name: str
+    designation: Optional[str] = None
     category: str
     grade: Optional[str] = None
     item_no: Optional[str] = None
     scale: Optional[str] = None
+    main_color: Optional[str] = None
     limited: str
     origin: str
     status: str
@@ -141,10 +145,12 @@ class ModelCreate(BaseModel):
 
 class ModelPatch(BaseModel):
     name: Optional[str] = None
+    designation: Optional[str] = None
     category: Optional[str] = None
     grade: Optional[str] = None
     item_no: Optional[str] = None
     scale: Optional[str] = None
+    main_color: Optional[str] = None
     limited: Optional[str] = None
     origin: Optional[str] = None
     status: Optional[str] = None
@@ -268,11 +274,13 @@ def list_models(
     grade: Optional[str] = Query(None),
     category: Optional[str] = Query(None),
     owner: Optional[str] = Query(None),
+    main_color: Optional[str] = Query(None),
     tag: Optional[str] = Query(None),
     q: Optional[str] = Query(None),
 ):
     filters = {"status": status, "storage": storage, "display": display,
-               "grade": grade, "category": category, "owner": owner, "tag": tag}
+               "grade": grade, "category": category, "owner": owner, "tag": tag,
+               "main_color": main_color}
     return db.list_models(filters, q)
 
 

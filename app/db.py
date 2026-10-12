@@ -11,6 +11,9 @@ from datetime import datetime, timezone
 CATEGORIES = ["GUNPLA", "手办", "乐高", "其他"]
 STATUSES = ["未开封", "未拼装", "制作中", "拼装完工", "标识系统完工", "最终完工", "成品"]
 
+# 机体颜色内置预设（软 enum；新库 setup 预填，老库 field_values 空值兜底）
+MAIN_COLOR_DEFAULTS = ["高达", "红", "白", "蓝", "黄", "橙", "粉红", "黑", "灰", "金", "银"]
+
 # 软枚举字段名（setup 页可填充；内置默认仅用于 env 引导模式，保持老部署行为不变）
 SOFT_DEFAULTS = {
     "grade": ["MEGASIZE", "PG Unleashed", "PG", "MGEX", "MG", "RG", "RE/100", "HG", "EG", "MGSD", "SDCS", "SDEX"],
@@ -18,6 +21,7 @@ SOFT_DEFAULTS = {
     "origin": ["官方", "KO", "其他"],
     "storage": ["Home A", "Home B", "仓库", "柜子"],
     "owner": ["主人", "崽", "其他"],
+    "main_color": MAIN_COLOR_DEFAULTS,
 }
 SOFT_FIELDS = list(SOFT_DEFAULTS)
 
@@ -80,10 +84,12 @@ def _models_ddl(cfg):
 CREATE TABLE IF NOT EXISTS models (
     id            TEXT PRIMARY KEY,
     name          TEXT NOT NULL,
+    designation   TEXT,
     category      TEXT NOT NULL CHECK (category IN ({in_list(cfg["categories"])})),
     grade         TEXT,
     item_no       TEXT,
     scale         TEXT,
+    main_color    TEXT,
     limited       TEXT NOT NULL,
     origin        TEXT NOT NULL,
     status        TEXT NOT NULL CHECK (status IN ({in_list(cfg["statuses"])})),
@@ -103,12 +109,16 @@ CREATE TABLE IF NOT EXISTS models (
 def _ensure_models_table(conn):
     conn.executescript(_models_ddl(_config))
     conn.commit()
-    # 迁移：老库补 tags / done_date 列
+    # 迁移：老库补 tags / done_date / designation / main_color 列
     cols = {r["name"] for r in conn.execute("PRAGMA table_info(models)").fetchall()}
     if "tags" not in cols:
         conn.execute("ALTER TABLE models ADD COLUMN tags TEXT NOT NULL DEFAULT '[]'")
     if "done_date" not in cols:
         conn.execute("ALTER TABLE models ADD COLUMN done_date TEXT")
+    if "designation" not in cols:
+        conn.execute("ALTER TABLE models ADD COLUMN designation TEXT")
+    if "main_color" not in cols:
+        conn.execute("ALTER TABLE models ADD COLUMN main_color TEXT")
     conn.commit()
 
 
@@ -159,8 +169,8 @@ def complete_setup(cfg):
     return _config
 
 FIELDS = [
-    "id", "name", "category", "grade", "item_no", "scale", "limited",
-    "origin", "status", "storage", "display", "owner",
+    "id", "name", "designation", "category", "grade", "item_no", "scale", "main_color",
+    "limited", "origin", "status", "storage", "display", "owner",
     "purchase_date", "done_date", "updated_at", "comment", "photos", "tags",
 ]
 WRITABLE = [f for f in FIELDS if f not in ("id", "updated_at", "photos")]
@@ -230,7 +240,7 @@ def list_models(filters=None, q=None):
     sql = "SELECT * FROM models"
     where, params = [], []
     if filters:
-        for col in ("status", "storage", "grade", "category", "owner"):
+        for col in ("status", "storage", "grade", "category", "owner", "main_color"):
             val = filters.get(col)
             if val:
                 where.append(f"{col} = ?")
@@ -245,8 +255,9 @@ def list_models(filters=None, q=None):
             where.append("EXISTS (SELECT 1 FROM json_each(tags) WHERE value = ?)")
             params.append(tag)
     if q:
-        where.append("name LIKE ?")
-        params.append(f"%{q}%")
+        # 名称与机设编号一并匹配（列表展示为"番号 名称"拼接）
+        where.append("(name LIKE ? OR designation LIKE ?)")
+        params.extend([f"%{q}%", f"%{q}%"])
     if where:
         sql += " WHERE " + " AND ".join(where)
     sql += " ORDER BY id"
@@ -269,6 +280,9 @@ def field_values():
     result = {}
     for field in SOFT_FIELDS:
         vals = list(cfg["soft_defaults"].get(field) or [])
+        # 老库 setup 快照没有 main_color：空值时兜底内置预设
+        if not vals and field == "main_color":
+            vals = list(MAIN_COLOR_DEFAULTS)
         rows = conn.execute(
             f"SELECT DISTINCT {field} AS v FROM models WHERE {field} IS NOT NULL AND {field} != ''"
         ).fetchall()

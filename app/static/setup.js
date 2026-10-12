@@ -5,9 +5,10 @@ const $ = (s) => document.querySelector(s);
 const DEFAULTS = {
   category: ["GUNPLA", "手办", "乐高", "其他"],
   status: ["未开封", "未拼装", "制作中", "拼装完工", "标识系统完工", "最终完工", "成品"],
+  main_color: ["高达", "红", "白", "蓝", "黄", "橙", "粉红", "黑", "灰", "金", "银"],
 };
-// 软枚举完全不预设，由用户自行填充
-const SOFT_FIELDS = ["grade", "limited", "origin", "storage", "owner"];
+// 软枚举完全不预设，由用户自行填充（main_color 例外：预填常用机体颜色）
+const SOFT_FIELDS = ["grade", "limited", "origin", "storage", "owner", "main_color"];
 
 const state = {};  // field -> string[]
 

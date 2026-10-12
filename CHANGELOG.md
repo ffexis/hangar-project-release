@@ -3,6 +3,92 @@
 All notable changes to this project are documented here.
 This project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.3.5]
+
+### Added
+
+- **`designation` field (机设番号)**: optional, editable in the form
+  right next to the name. The list and detail views show "designation name"
+  as a single combined title (no separate row); search now matches
+  designation as well as name.
+- **`main_color` field (机体颜色)**: soft enum with built-in presets
+  (高达/红/白/蓝/黄/橙/粉红/黑/灰/金/银), editable freely, placed after
+  the scale field. Old databases automatically fall back to the built-in
+  presets; the setup page pre-fills them for new installs.
+- **Color filter** in the header filter menu.
+- **KO badge**: records whose origin is "KO" show a KO stamp badge next to
+  the name, and their grade logo renders grayscale to distinguish
+  third-party kits from official ones.
+
+### Changed
+
+- **List columns**: removed the "来源" (origin) and "展示" (display)
+  columns; both fields remain editable and filterable.
+- **FAB placement**: the add-button now sits lower, its bottom third
+  overlapping the fixed footer; it is hidden while the add/edit form is
+  open.
+- **Edit form**: the photo-upload control is hidden when editing an
+  existing record (photo management lives in the detail dialog).
+
+### Fixed
+
+- **Mobile card layout**: the KO badge no longer gets pushed to the far
+  edge away from the name (name text and badge are wrapped as one flex
+  item).
+
+## [1.3.4]
+
+### Added
+
+- **Photo drag-to-reorder** in the detail dialog: mouse drag (movement
+  threshold) and touch long-press (500 ms, with vibration feedback on
+  supported devices). Pointer Events based, no new dependencies; the drop
+  order is persisted through the existing `PUT /photos/order` endpoint.
+- **Chunked resumable uploads for the add/edit form**: photos attached to a
+  record are now uploaded through the same 1 MB-chunk / 3-concurrent /
+  retry engine the detail view already used (extracted into a shared
+  `upload.js`), making slow relays (e.g. DERP) far more robust.
+- **Upload progress UI in the form**: save/cancel buttons lock while
+  submitting and uploading (save button shows a spinner), an embedded
+  progress bar reports per-chunk byte progress, and an "中断" (abort)
+  button stops the upload mid-flight — already-uploaded photos are kept
+  and the rest can be finished later from the detail view.
+
+## [1.3.3]
+
+### Changed
+
+- **Header-first toolbar**: search and filters moved into the sticky header
+  as icon dropdown menus (search panel auto-focuses; filter menu applies on
+  change and shows an active-count badge). The refresh button and the whole
+  toolbar row are gone.
+- **Auth state unified**: logged-out users see a single "只读模式（点击以登录）"
+  chip in the header that opens the login dialog; the separate read-only
+  hint line was removed.
+- **Add button is now a floating action button** (round, bottom-right,
+  visible only when logged in).
+- **Row actions as icon buttons**: edit/delete use inline boxicons SVGs
+  (tooltips on hover) instead of text links.
+- **Table header always visible on desktop**: the table area scrolls
+  internally (`max-height` + sticky `thead`), with a custom overlay
+  scrollbar whose travel starts below the header — the native vertical
+  scrollbar is hidden and replaced by a themed overlay thumb (drag +
+  scroll sync), so it never overlaps the header and keeps the container
+  corner radius intact.
+
+### Fixed
+
+- **Dialog buttons left-aligned**: login and form action rows combined
+  `flex-direction: row-reverse` with `justify-content: flex-end`, which
+  pushed buttons to the left; now correctly right-aligned with the
+  primary action farthest right.
+- **Header right-edge gap**: the global `scrollbar-gutter: stable`
+  reservation left a blank strip beside the header once the page itself
+  stopped scrolling; removed.
+- **Unsaved changes guard**: clicking back/cancel on the add/edit form
+  with unsaved edits now asks "放弃填写？" via the dialog component;
+  an untouched form still closes immediately.
+
 ## [1.3.2]
 
 ### Fixed

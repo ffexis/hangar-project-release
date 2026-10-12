@@ -1,7 +1,7 @@
 // Hangar WebUI — 导入/导出：右上角工具栏入口 + 通用 dialog 承载确认流程。
 // 导出：勾选含照片/含高德 Key → GET /export 下载 ZIP（读 X-Export-Note 提示）。
 // 导入：选 .zip → 分块并发上传（复用 1.2.1 机制）→ complete → 模式确认 → POST /imports。
-import { $, api, apiKey, toast, uuidv4, esc, openLoginModal } from "./core.js";
+import { $, api, apiKey, toast, uuidv4, esc, openLoginModal, closeHeaderMenus } from "./core.js";
 import { openDialog } from "./dialog.js";
 
 const CHUNK_SIZE = 1024 * 1024;
@@ -392,9 +392,8 @@ export function initImportExport() {
   if (!btn || !menu) return;
   btn.onclick = (e) => {
     e.stopPropagation();
-    // 与主题菜单互斥：trigger 的 click 已 stopPropagation，需手动收起另一个菜单
-    const themeMenu = $("#theme-menu");
-    if (themeMenu) themeMenu.classList.add("hidden");
+    // trigger 的 click 已 stopPropagation，需手动收起其他 header 菜单
+    closeHeaderMenus("#io-menu");
     menu.classList.toggle("hidden");
   };
   menu.addEventListener("click", (e) => {

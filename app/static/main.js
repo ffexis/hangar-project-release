@@ -1,10 +1,10 @@
 // Hangar WebUI — 入口：初始化 / 全局事件绑定
 import {
   $, initTheme, renderAuthState, renderReadonly, checkAuthOnLoad,
-  ovClose, closeLoginModal, doLogin,
+  ovClose, closeLoginModal, doLogin, closeHeaderMenus,
 } from "./core.js";
 import {
-  loadValues, loadList, updateFilterCount, initFilterDrawer,
+  loadValues, loadList, updateFilterCount, initFilterDrawer, initCustomScrollbar,
 } from "./list.js";
 import { openForm, initForm } from "./form.js";
 import { closeDetail, initDetail } from "./detail.js";
@@ -43,13 +43,21 @@ async function init() {
     if (e.target === e.currentTarget) ovClose(closeLoginModal);
   });
 
-  $("#btn-refresh").onclick = refreshAll;
   $("#btn-add").onclick = () => openForm(null);
   initForm();
 
-  ["#f-status", "#f-storage", "#f-grade", "#f-category", "#f-owner", "#f-tag", "#f-display"].forEach(
-    (s) => ($(s).onchange = loadList)
-  );
+  // 搜索：header 下拉面板，输入防抖 300ms
+  const searchMenu = $("#search-menu");
+  $("#btn-search").onclick = (e) => {
+    e.stopPropagation();
+    closeHeaderMenus("#search-menu");
+    const opening = searchMenu.classList.contains("hidden");
+    searchMenu.classList.toggle("hidden");
+    if (opening) $("#f-q").focus();
+  };
+  document.addEventListener("click", (e) => {
+    if (!e.target.closest("#search-picker")) searchMenu.classList.add("hidden");
+  });
   let qt;
   $("#f-q").addEventListener("input", () => {
     clearTimeout(qt);
@@ -69,6 +77,7 @@ async function init() {
   await checkAuthOnLoad();
   await refreshAll();
   initFilterDrawer();
+  initCustomScrollbar();
 }
 
 init();
