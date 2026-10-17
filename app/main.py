@@ -11,6 +11,7 @@ import threading
 import time
 import uuid
 import zipfile
+from contextlib import asynccontextmanager
 from typing import Optional
 from urllib.parse import quote
 
@@ -20,7 +21,7 @@ from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import db, exif
+from . import db, exif, mcp_server
 
 logger = logging.getLogger("hangar")
 
@@ -48,7 +49,22 @@ mimetypes.add_type("application/manifest+json", ".webmanifest")
 # python:3.11-slim 无系统 mime 表，.webp 会落到 text/plain；MEGASIZE logo 用 webp，显式注册
 mimetypes.add_type("image/webp", ".webp")
 
-app = FastAPI(title="Hangar Project", version="1.3.5")
+# FastMCP 子应用（v1.4.0）：Starlette 不会自动运行被 mount 子应用的 lifespan，
+# 必须在父 app 的 lifespan 里显式进入子应用 lifespan（session manager 初始化），
+# 否则 Streamable HTTP 握手失败。
+mcp_app = mcp_server.build_http_app()
+
+
+@asynccontextmanager
+async def lifespan(app):
+    db.init_db()
+    if db.is_initialized():
+        _startup_consistency_scan()
+    async with mcp_app.lifespan(app):
+        yield
+
+
+app = FastAPI(title="Hangar Project", version="1.4.0", lifespan=lifespan)
 
 
 @app.middleware("http")
@@ -69,13 +85,6 @@ def verify_api_key(x_api_key: Optional[str] = Header(None)):
     if not token or not secrets.compare_digest(x_api_key or "", token):
         raise HTTPException(status_code=401, detail="无效或缺失的 X-API-Key")
     return True
-
-
-@app.on_event("startup")
-def startup():
-    db.init_db()
-    if db.is_initialized():
-        _startup_consistency_scan()
 
 
 def _startup_consistency_scan():
@@ -330,6 +339,46 @@ def delete_model(model_id: str):
     return {"ok": True}
 
 
+# ---------- 机型别名维护（v1.3.6，自用接口无前端） ----------
+
+class AliasBody(BaseModel):
+    raw: str
+    name: str
+
+
+@app.get("/api/v1/device-aliases")
+def get_device_aliases():
+    return {"aliases": db.list_aliases()}
+
+
+@app.post("/api/v1/device-aliases", dependencies=[Depends(verify_api_key)])
+def post_device_alias(body: AliasBody):
+    raw = (body.raw or "").strip()
+    name = (body.name or "").strip()
+    if not raw or not name:
+        raise HTTPException(status_code=400, detail="raw/name 不能为空")
+    if len(raw) > db.MAX_ALIAS_RAW or len(name) > db.MAX_ALIAS_NAME:
+        raise HTTPException(status_code=400,
+                            detail=f"raw 最长 {db.MAX_ALIAS_RAW}、name 最长 {db.MAX_ALIAS_NAME} 字符")
+    # 表内键域 = 清洗不动点：raw 若会被清洗层改变，登记了永远命不中，直接拒绝并给出正确值
+    cleaned = exif.clean_model(raw)
+    if cleaned != raw:
+        if cleaned:
+            raise HTTPException(status_code=400,
+                                detail=f"raw 经清洗层会变为 {cleaned!r}（剥括号/变体后缀），请登记清洗后的值")
+        raise HTTPException(status_code=400,
+                            detail="raw 会被清洗层剥空（仅括号内容/变体后缀），无法作为查表键")
+    entry, created = db.upsert_alias(raw, name)
+    return JSONResponse(entry, status_code=201 if created else 200)
+
+
+@app.delete("/api/v1/device-aliases/{raw}", dependencies=[Depends(verify_api_key)])
+def delete_device_alias(raw: str):
+    if not db.delete_alias(raw):
+        raise HTTPException(status_code=404, detail="别名不存在")
+    return {"ok": True, "deleted": raw}
+
+
 # ---------- 照片 ----------
 
 def _next_photo_index(photos, model_id):
@@ -570,6 +619,23 @@ def delete_photo(model_id: str, filename: str):
     return db.update_model(model_id, {"photos": photos})
 
 
+def _nn(v):
+    """EXIF 脏值归一：部分机型把 Make/Model 写成 "--"，视为空。"""
+    return None if not v or v.strip() == "--" else v.strip()
+
+
+def _dedup_join(make, model_norm):
+    """Make + 归一 Model 拼接：Model 已以 Make 开头（大小写不敏感前缀）则不重复加，
+    避免 "Xiaomi" + "Xiaomi 14 Ultra" → "Xiaomi Xiaomi 14 Ultra" 冗余。"""
+    if not make:
+        return model_norm or None
+    if not model_norm:
+        return make
+    if model_norm.lower().startswith(make.lower()):
+        return model_norm
+    return f"{make} {model_norm}"
+
+
 @app.get("/api/v1/models/{model_id}/photos/{filename}/meta")
 async def photo_meta(model_id: str, filename: str):
     """照片 EXIF 元数据（无需鉴权，WebUI 浏览大图时调用）。"""
@@ -585,6 +651,15 @@ async def photo_meta(model_id: str, filename: str):
     if not os.path.isfile(path):
         raise HTTPException(status_code=404, detail="照片文件不存在")
     meta = exif.read_exif(path)
+    # v1.3.6 机型归一：清洗 Model → 查别名表 → 与 Make 去重拼接。
+    # device_raw = 裸 EXIF Model 原值（不含 Make、未经清洗）：查表键就是清洗后的裸 Model，
+    # 维护者直接复制 device_raw 登记即可命中（编号串清洗后不变；脏串会被 POST 校验拦下）。
+    make = _nn(meta.pop("make", None))
+    model = _nn(meta.pop("model", None))
+    cleaned = exif.clean_model(model)
+    model_norm = db.resolve_device_alias(cleaned) or cleaned
+    meta["device_raw"] = model
+    meta["device"] = _dedup_join(make, model_norm)
     if meta.get("map"):
         gmap = meta["map"]
         cached = db.geo_cache_get(gmap["lat"], gmap["lng"])
@@ -1141,6 +1216,28 @@ def setup_page():
         return RedirectResponse("/")
     return FileResponse(os.path.join(STATIC_DIR, "setup.html"))
 
+
+# MCP 端点（v1.4.0）：客户端 URL 为 http://<host>:8333/mcp（inner path 已设 '/'）。
+# 坑：http_app(path="/") + Mount("/mcp") 时，无尾斜杠的 /mcp 会被子应用 307 重定向到
+# /mcp/，而本项目 @app.middleware("http") 产生的 BaseHTTPMiddleware 会吞掉这个内部
+# 重定向并以 GET 重放 → streamable handler 收到 GET 返回 405（带 key 也一样）。
+# 解法：最外层加一个纯 ASGI 中间件，把精确 "/mcp" 规范化为 "/mcp/"，从根上避免重定向。
+# 该中间件只改请求 path、不碰响应，故不影响其余路由与静态挂载。
+class _McpPathNormalize:
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] == "http" and scope.get("path", "") == "/mcp":
+            scope = dict(scope)
+            scope["path"] = "/mcp/"
+            scope["raw_path"] = b"/mcp/"
+        await self.app(scope, receive, send)
+
+
+app.mount("/mcp", mcp_app, name="mcp")
+# add_middleware 插到列表头 → 构建后位于最外层，先于 BaseHTTPMiddleware 规范化 path
+app.add_middleware(_McpPathNormalize)
 
 # 静态资源挂载（放在最后，避免覆盖 API 路由）
 app.mount("/photos", StaticFiles(directory=PHOTOS_DIR), name="photos")

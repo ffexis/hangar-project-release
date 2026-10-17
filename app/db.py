@@ -36,6 +36,11 @@ CREATE TABLE IF NOT EXISTS geo_cache (
     address   TEXT NOT NULL,
     cached_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS device_alias (
+    raw  TEXT PRIMARY KEY,   -- EXIF 清洗后的 Model 值，按原样存
+    name TEXT NOT NULL       -- 人读机型名
+);
 """
 
 CONFIG_KEY = "***"
@@ -389,6 +394,47 @@ def _geo_key(lat, lng):
     return f"{round(lat, 4):.4f},{round(lng, 4):.4f}"
 
 
+# ---------- 机型别名归一（device_alias，v1.3.6）----------
+
+MAX_ALIAS_RAW = 64
+MAX_ALIAS_NAME = 128
+
+
+def list_aliases():
+    conn = _conn()
+    rows = conn.execute("SELECT raw, name FROM device_alias ORDER BY raw").fetchall()
+    conn.close()
+    return [{"raw": r["raw"], "name": r["name"]} for r in rows]
+
+
+def upsert_alias(raw, name):
+    """raw 已存在则覆盖 name。返回 (条目, 是否新建)。"""
+    conn = _conn()
+    created = conn.execute("SELECT 1 FROM device_alias WHERE raw = ?", (raw,)).fetchone() is None
+    conn.execute("INSERT OR REPLACE INTO device_alias (raw, name) VALUES (?, ?)", (raw, name))
+    conn.commit()
+    conn.close()
+    return {"raw": raw, "name": name}, created
+
+
+def delete_alias(raw):
+    conn = _conn()
+    cur = conn.execute("DELETE FROM device_alias WHERE raw = ?", (raw,))
+    conn.commit()
+    conn.close()
+    return cur.rowcount > 0
+
+
+def resolve_device_alias(cleaned):
+    """清洗后的 Model 查映射表；未命中返回 None。"""
+    if not cleaned:
+        return None
+    conn = _conn()
+    row = conn.execute("SELECT name FROM device_alias WHERE raw = ?", (cleaned,)).fetchone()
+    conn.close()
+    return row["name"] if row else None
+
+
 # ---------- 导入导出（v1.3.0 数据迁移/备份） ----------
 
 SUPPORTED_FORMAT_VERSIONS = [1]
@@ -425,6 +471,7 @@ def export_payload(app_version, include_amap):
             "soft_defaults": {f: list(cfg["soft_defaults"].get(f) or []) for f in SOFT_FIELDS},
         },
         "models": list_models(),
+        "device_aliases": list_aliases(),
     }
     if include_amap:
         payload["amap_key"] = cfg.get("amap_key", "")
@@ -483,6 +530,16 @@ def validate_payload(payload):
             v = m.get(f)
             if v not in (None, "") and not (isinstance(v, str) and _IMPORT_DATE_RE.match(v)):
                 errors.append(f"{p}.{f} 日期格式必须是 YYYY-MM-DD: {v!r}")
+    aliases = payload.get("device_aliases")
+    if aliases is not None:  # v1.3.6 新增字段；老包缺省合法（导入时跳过）
+        if not isinstance(aliases, list):
+            errors.append("device_aliases 必须是数组")
+        else:
+            for i, a in enumerate(aliases):
+                if not (isinstance(a, dict)
+                        and isinstance(a.get("raw"), str) and a["raw"].strip()
+                        and isinstance(a.get("name"), str) and a["name"].strip()):
+                    errors.append(f"device_aliases[{i}] 必须是含非空 raw/name 字符串的对象")
     if "amap_key" in payload and not isinstance(payload["amap_key"], str):
         errors.append("amap_key 必须是字符串")
     return errors
@@ -536,6 +593,11 @@ def import_replace(payload):
                 f"INSERT INTO models ({cols}) VALUES ({marks})",
                 [row[f] for f in FIELDS],
             )
+        # device_alias 整体替换（老包无该字段 = 清空，与 replace 语义一致）
+        conn.execute("DELETE FROM device_alias")
+        for a in payload.get("device_aliases") or []:
+            conn.execute("INSERT OR REPLACE INTO device_alias (raw, name) VALUES (?, ?)",
+                         (a["raw"].strip(), a["name"].strip()))
         conn.commit()
     except Exception:
         conn.rollback()
@@ -591,6 +653,10 @@ def import_merge(payload, photo_ok=None):
                 [row[f] for f in FIELDS],
             )
             imported += 1
+        # device_alias 按 raw upsert（merge 语义：只增改不删）
+        for a in payload.get("device_aliases") or []:
+            conn.execute("INSERT OR REPLACE INTO device_alias (raw, name) VALUES (?, ?)",
+                         (a["raw"].strip(), a["name"].strip()))
         conn.commit()
     except Exception:
         conn.rollback()

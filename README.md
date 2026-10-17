@@ -27,7 +27,25 @@ full-screen lightbox.
   with a persistent local cache so repeated lookups are cheap; falls back to raw
   coordinates when no API key is configured
 - **Tags** (max 3 per record) with colored badges, exact-match filtering, and suggestions
-- **Grade logos** for common gunpla grades (HG / RG / MG / MGEX / PG / ...)
+- **Grade logos** for common gunpla grades (HG / RG / MG / MGEX / PG / ...); a KO stamp
+  badge and grayscale logo mark third-party kits
+- **Designation & color fields**: optional 机设番号 next to the name (searchable, shown
+  as "designation name"), plus a `main_color` soft enum with a header color filter
+- **Robust photo pipeline**: chunked resumable uploads (1 MB chunks, 3 parallel workers,
+  per-chunk retry, byte progress) in both the detail view and the add/edit form, with a
+  lockable progress UI and mid-flight abort; drag-to-reorder in the gallery (mouse drag
+  and touch long-press with vibration feedback)
+- **Backup & restore**: ZIP archive export as a background job with live progress
+  (optional photos; optional AES-256 encrypted package carrying the Amap key), and
+  chunked resumable import with replace / merge modes
+- **EXIF device normalization**: cryptic `Model` codes (e.g. `M2102K1C`) map to readable
+  device names via a maintainable alias table; `device_raw` exposes the untouched value
+- **HDR badge** in the lightbox for Ultra HDR / gain-map JPEGs
+- **PWA manifest & site icons** (installable as an app on desktop browsers)
+- **MCP server**: AI agents can operate the hangar through 13 typed tools over
+  Streamable HTTP at `/mcp`, guarded by the same `X-API-Key` token
+- **Header-first toolbar**: sticky header with icon dropdown search/filter menus,
+  floating add button, always-visible table header on desktop
 - **Responsive**: desktop table view, mobile card view with touch gestures
 - **Light / dark theme** following system preference
 
@@ -71,17 +89,31 @@ All endpoints under `/api/v1`. Reads are public; writes need `X-API-Key: <token>
 ```
 GET    /api/v1/status                        # { initialized: bool }
 POST   /api/v1/setup                         # first-run only
-GET    /api/v1/models                        # list, supports ?status=&storage=&grade=&category=&owner=&tag=&q=&display=
+GET    /api/v1/models                        # list, supports ?status=&storage=&display=&grade=&category=&owner=&main_color=&tag=&q=
 GET    /api/v1/models/values                 # enum values & suggestions for filters/forms
 POST   /api/v1/models                        # create (id auto-generated as M001…)
 PATCH  /api/v1/models/{id}                   # partial update
 DELETE /api/v1/models/{id}
 POST   /api/v1/models/{id}/photos            # multipart upload (jpg/png/webp/gif, ≤20MB)
+POST   /api/v1/models/{id}/photos/chunk | /complete   # chunked resumable upload (WebUI path)
+PUT    /api/v1/models/{id}/photos/order      # reorder (must be a permutation)
 DELETE /api/v1/models/{id}/photos/{filename}
-GET    /api/v1/models/{id}/photos/{filename}/meta  # EXIF + address (no auth)
-GET    /api/v1/export?include_photos=&include_amap=  # ZIP backup (encrypted when amap included)
+GET    /api/v1/models/{id}/photos/{filename}/meta  # EXIF + address + device/device_raw (no auth)
+GET    /api/v1/device-aliases                # EXIF Model → readable name map
+POST   /api/v1/device-aliases                # upsert alias
+DELETE /api/v1/device-aliases/{raw}
+GET    /api/v1/export?include_photos=&include_amap=  # sync ZIP backup (encrypted when amap included)
+GET    /api/v1/export/preview                # estimated package size
+POST   /api/v1/export/jobs                   # background export job…
+GET    /api/v1/export/jobs/{id}              # …byte progress…
+GET    /api/v1/export/jobs/{id}/download     # …and finished package
+DELETE /api/v1/export/jobs/{id}              # cleanup (30-min TTL sweep as backstop)
 POST   /api/v1/imports/chunk | /imports/complete | /imports  # chunked upload + replace/merge import
 ```
+
+**MCP server** (Streamable HTTP): point your MCP client at `http://<host>:8333/mcp`
+with an `X-API-Key` header. 13 typed tools cover models, photos, EXIF meta, values and
+status — see the [1.4.0 changelog](CHANGELOG.md) for the full list and auth model.
 
 ## Development
 
@@ -90,7 +122,7 @@ pip install -r requirements.txt
 uvicorn app.main:app --reload --port 8333
 ```
 
-Stack: Python 3.11+, FastAPI, Pillow, pyzipper (+piexif for tests), vanilla JS/CSS frontend.
+Stack: Python 3.11+, FastAPI, FastMCP, Pillow, pyzipper (+piexif for tests), vanilla JS/CSS frontend.
 
 ## Known limitations
 

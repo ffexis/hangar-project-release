@@ -1,5 +1,6 @@
 """照片 EXIF 解析 + GPS 坐标转换 + 高德反向地理编码。"""
 import math
+import re
 from fractions import Fraction
 
 import httpx
@@ -35,6 +36,25 @@ def _num(v):
     if math.isnan(f) or math.isinf(f):
         return None
     return f
+
+
+# 第三方 ROM / 内测版写入 Model 尾部的已知变体标记（非机型信息）
+_VARIANT_SUFFIX_RE = re.compile(r"\s+(P2XL|PXL|N6P)\Z", re.IGNORECASE)
+
+
+def clean_model(model):
+    """EXIF Model 通用清洗（v1.3.6 机型归一，纯正则、无 DB 依赖、只做一次）：
+    a. 剥括号及其内容（第三方 ROM 把版本串写进 Model）
+    b. 剥尾部已知变体后缀（仅当剩余部分非空才剥）
+    c. strip；清洗后为空返回 None。"""
+    if not model:
+        return None
+    s = re.sub(r"\s*\([^)]*\)", "", model)
+    stripped = _VARIANT_SUFFIX_RE.sub("", s)
+    if stripped.strip():
+        s = stripped
+    s = s.strip()
+    return s or None
 
 
 def _fmt_exposure(sec):
@@ -127,6 +147,9 @@ def read_exif(path):
     model = str(ex.get(TAG_MODEL, "") or "").strip()
     dev = " ".join(x for x in (make, model) if x)
     meta["device"] = dev or None
+    # Make/Model 分开透出，供上层机型归一（main.py 消费后 pop，不出现在接口响应）
+    meta["make"] = make or None
+    meta["model"] = model or None
     meta["exposure"] = _fmt_exposure(_num(sub.get(TAG_EXPOSURE)))
     meta["aperture"] = _num(sub.get(TAG_FNUMBER))
     # 35mm 等效焦距优先，退回实际焦距

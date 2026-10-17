@@ -3,6 +3,64 @@
 All notable changes to this project are documented here.
 This project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.4.0]
+
+### Added
+
+- **MCP server** (Streamable HTTP): a FastMCP layer mounted on the same app
+  and port, so AI agents can operate the hangar through typed tools instead
+  of raw `curl`. Endpoint: **`http://<host>:8333/mcp`** (exact URL, no
+  trailing slash needed — a path-normalize middleware handles both).
+  13 hand-written tools: `hangar_list_models` / `hangar_get_model` /
+  `hangar_search_models` / `hangar_create_model` / `hangar_update_model` /
+  `hangar_delete_model` / `hangar_list_photos` / `hangar_upload_photo` /
+  `hangar_reorder_photos` / `hangar_delete_photo` / `hangar_photo_meta` /
+  `hangar_values` / `hangar_status`. Deliberately **not** exposed:
+  setup, auth-check, import/export and any generic escape-hatch tool.
+- **MCP auth model**: tools proxy through the REST API with the instance
+  token read in-process (single source of truth, never a tool parameter and
+  never echoed in results/errors). `/mcp` itself is guarded by an
+  `X-API-Key` check (constant-time compare) — the deployment is LAN-reachable,
+  so an unguarded MCP endpoint would be an anonymous write door.
+- Photos over MCP are capped at 5 MB (base64 in); larger files keep using
+  the chunked upload REST path.
+
+### Changed
+
+- Dependencies: added `fastmcp==2.14.7`; `httpx` pin raised to `0.28.*` and
+  `uvicorn` to `0.35.*` (required by fastmcp; no behavior change for existing
+  code paths).
+- App startup moved from `@app.on_event("startup")` to a combined
+  `lifespan` (required to run the mounted MCP app's session manager).
+
+## [1.3.6]
+
+### Added
+
+- **Device alias normalization**: EXIF `Model` codes (e.g. `M2102K1C`) are now
+  mapped to human-readable device names via a new `device_alias` SQLite table.
+  Generic cleaning (parenthesis stripping, known ROM-variant suffixes such as
+  `P2XL`/`PXL`/`N6P`) runs before the lookup, so dirty strings still normalize
+  without a table entry. The photo meta endpoint additionally returns
+  `device_raw` — the untouched raw EXIF `Model` (no Make prefix), so copying
+  it into the alias API always matches ("what you see is what you look up");
+  `device` keeps its meaning, so the WebUI needs no changes.
+- **Alias maintenance API** (self-use, no UI): `GET` (public) /
+  `POST` (upsert, `X-API-Key`) / `DELETE` (`X-API-Key`)
+  on `/api/v1/device-aliases`. POST rejects empty values and any raw the
+  cleaning layer would alter (non-fixed-point keys could never match; the
+  400 message shows the cleaned value to register instead).
+- `device_alias` rows are carried by export/import as `device_aliases`
+  (`format_version` stays 1; old packages without the field import cleanly).
+
+### Fixed
+
+- **Make/model redundancy**: `device` is now Make + normalized Model joined
+  with dedup — `Xiaomi` + `Xiaomi 14 Ultra` renders as `Xiaomi 14 Ultra`
+  instead of `Xiaomi Xiaomi 14 Ultra`.
+- Photos whose EXIF Make/Model are both `--` now report `device: null`
+  instead of the literal `"-- --"`.
+
 ## [1.3.5]
 
 ### Added
